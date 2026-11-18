@@ -316,11 +316,6 @@ impl App {
                 }
                 fx
             }
-            // Skyward's own page asks GitHub the same way.
-            Screen::SkywardUpdate if matches!(self.state.skyward_check, SkywardCheck::Idle | SkywardCheck::Failed(_)) && self.state.online() => {
-                self.state.skyward_check = SkywardCheck::Asking;
-                vec![Effect::CheckSkyward]
-            }
             Screen::Wlan if self.state.wlan.as_ref().is_some_and(|w| w.power == Power::On) => vec![Effect::ScanWlan],
             _ => Vec::new(),
         }

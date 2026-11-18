@@ -326,6 +326,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "the system update notice is gone"]
     fn the_keys_reach_the_last_row_of_a_home_page_grown_by_an_update_notice() {
         let f = fonts();
         let i = DeviceInfo { snapshot: SnapshotState::Snapshotted, ..info() };

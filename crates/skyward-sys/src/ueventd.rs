@@ -6,11 +6,18 @@ pub const RULE_FILES: [&str; 2] = ["/vendor/etc/ueventd.rc", "/odm/etc/ueventd.r
 pub const PASSWD_FILES: [&str; 2] = ["/vendor/etc/passwd", "/odm/etc/passwd"];
 pub const GROUP_FILES: [&str; 2] = ["/vendor/etc/group", "/odm/etc/group"];
 
-/// The accounts Android fixes once and for all. The rules, and the init
-/// scripts of the phone's own programs, name them rather than their
-/// numbers, and a recovery has no list of its own to look them up in.
-const ACCOUNTS: [(&str, u32); 33] = [
+/// The accounts Android fixes once and for all, as bionic's own table of
+/// them has it: the rules, and the init scripts of the phone's own
+/// programs, name them rather than their numbers, and a recovery has no
+/// list of its own to look them up in. Vivo's own passwd and group files
+/// carry none of these, its init resolving them all by the names bionic
+/// keeps, so the recovery has to keep the same ones: where it is shorter,
+/// programs like ssgtzd, whose sockets the phone gives to the group
+/// `inet`, would have no account to run as.
+const ACCOUNTS: [(&str, u32); 55] = [
     ("root", 0),
+    ("daemon", 1),
+    ("bin", 2),
     ("system", 1000),
     ("radio", 1001),
     ("bluetooth", 1002),
@@ -36,12 +43,32 @@ const ACCOUNTS: [(&str, u32); 33] = [
     ("mtp", 1024),
     ("drmrpc", 1026),
     ("nfc", 1027),
+    ("sdcard_r", 1028),
+    ("clat", 1029),
+    ("loop_radio", 1030),
+    ("mediadrm", 1031),
+    ("package_info", 1032),
+    ("sdcard_pics", 1033),
+    ("sdcard_av", 1034),
+    ("sdcard_all", 1035),
+    ("logd", 1036),
+    ("shared_relro", 1037),
     ("audioserver", 1041),
     ("cameraserver", 1047),
     ("shell", 2000),
+    ("cache", 2001),
+    ("diag", 2002),
+    ("net_bt_admin", 3001),
+    ("net_bt", 3002),
+    ("inet", 3003),
+    ("net_raw", 3004),
+    ("net_admin", 3005),
+    ("net_bw_stats", 3006),
+    ("net_bw_acct", 3007),
     ("readproc", 3009),
     ("wakelock", 3010),
     ("uhid", 3011),
+    ("misc", 9998),
     ("nobody", 9999),
 ];
 
@@ -240,6 +267,10 @@ mod tests {
         let known = accounts(&[passwd.to_str().unwrap()]);
         assert_eq!(account(&known, "vendor_qti_diag"), Some(2901));
         assert_eq!(account(&known, "system"), Some(1000));
+        // The phone's own files carry none of Android's fixed accounts:
+        // they come from the table above, or programs that need them fail.
+        assert_eq!(account(&known, "inet"), Some(3003));
+        assert_eq!(account(&known, "net_raw"), Some(3004));
         assert_eq!(account(&known, "nothing"), None);
     }
 }

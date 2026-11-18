@@ -545,6 +545,12 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     for path in load_modules(cfg, &cfg.modules.load)? {
         skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
     }
+    // A phone's own driver may keep the port a device until told it may be
+    // a host, and a drive plugged into an OTG adapter then shows at once.
+    if let Some(host) = cfg.usb.as_ref().and_then(|u| u.host_mode.as_ref()) {
+        std::fs::write(&host.path, &host.value).with_context(|| format!("write {} to {}", host.value, host.path))?;
+        skyward_sys::kmsg(&format!("{} is {}", host.path, host.value))?;
+    }
     if !cfg.owners.is_empty() {
         let handed = hand_over(&cfg.owners)?;
         skyward_sys::kmsg(&format!("{handed} of the phone's own files handed to the accounts its init gives them"))?;
@@ -575,7 +581,10 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     if found.as_deref().is_ok_and(keys::serves_elements) {
         registering.push(skyward_omapi::SERVICE.to_string());
     }
-    registering.extend(cfg.wlan.iter().map(|w| w.service.clone()));
+    if let Some(wlan) = &cfg.wlan {
+        registering.push(wlan.service.clone());
+        registering.extend(wlan.services.iter().cloned());
+    }
     // A program may register more than the recovery waits for, as the
     // WLAN's supplicant registers its maker's own service beside
     // Android's, and ends where the directory turns one of them away. So
@@ -709,6 +718,28 @@ fn mount_firmware(partition: &str) -> Result<()> {
     skyward_sys::kmsg(&format!("{partition} is mounted on {}, shown at {}", at.display(), shown.display()))
 }
 
+/// Show the partition holding the firmware images at the recovery's own
+/// firmware folder before the phone's init is told to start the ADSP and the
+/// charger, whose images live in it: mounting the vendor partition over
+/// /vendor later hides the folder the phone's table mounts them in, and a
+/// loader that runs between the two finds no image. The folder is made anew
+/// where the phone's init left a link to the one that is hidden.
+#[cfg(target_os = "android")]
+fn mount_firmware_early(partition: &str) -> Result<()> {
+    let shown = Path::new(FIRMWARE_SHOWN);
+    if skyward_block::mount::is_mount_point(shown)? {
+        return Ok(());
+    }
+    if std::fs::symlink_metadata(shown).is_ok_and(|m| m.file_type().is_symlink()) {
+        std::fs::remove_file(shown).with_context(|| format!("take away the link {}", shown.display()))?;
+    }
+    std::fs::create_dir_all(shown).with_context(|| format!("make {}", shown.display()))?;
+    let device = PathBuf::from(format!("/dev/block/by-name/{partition}{}", booted_slot()?.suffix()));
+    skyward_block::mount::mount(&device, shown, "vfat", &["ro".to_string()])
+        .with_context(|| format!("mount {} on {}", device.display(), shown.display()))?;
+    skyward_sys::kmsg(&format!("{partition} is shown at {} for the phone's own loaders", shown.display()))
+}
+
 /// What the phone's own secure services read to tell the secure world which
 /// build is running: the system's version and patch level, and the vendor
 /// partition's patch level. A recovery image carries its own, older build's
@@ -750,22 +781,40 @@ fn recovery() -> Result<()> {
         std::fs::set_permissions(skyward_sys::RUN, std::fs::Permissions::from_mode(0o755))
             .with_context(|| format!("open {} to the recovery's other users", skyward_sys::RUN))?;
         skyward_sys::keep_log(Path::new(skyward_sys::LOG))?;
-        // A recovery that ended with a function of its own in the port took
-        // the port with it; going through "none" takes that function off.
-        if skyward_sys::prop("sys.usb.state").is_some_and(|s| s != "adb") {
-            skyward_sys::usb::set("none", std::time::Duration::from_secs(5))?;
+        let cfg = DeviceConfig::load(Path::new("/").join(ramdisk::CONFIG))?;
+        // The images the phone's init starts the ADSP and the charger with must
+        // be there before it is told to start them, and mounting the vendor
+        // partition over /vendor hides the folder the phone's table mounts them
+        // in; show them in the recovery's own folder first.
+        #[cfg(target_os = "android")]
+        if let Some(firmware) = &cfg.firmware
+            && let Err(e) = mount_firmware_early(&firmware.partition)
+        {
+            skyward_sys::kmsg(&format!("firmware not shown before the phone's init starts: {e:#}"))?;
         }
-        skyward_sys::set_prop("sys.usb.config", "adb")?;
+        // The stock recovery's charger and ADSP modules are loaded by an
+        // init action that waits for this property, which the recovery
+        // program Skyward replaces used to set; without it no battery
+        // power supply is made, and the pages show no charge.
+        if let Err(e) = skyward_sys::set_prop("recovery.fastboot_mode", "0") {
+            skyward_sys::kmsg(&format!("recovery.fastboot_mode not set: {e:#}"))?;
+        }
+        // The image's init starts adbd with the default class at boot, as
+        // the recovery program it replaces used to. Ask for the port's adb
+        // function where the boot has not already, and wait for init to
+        // bind it.
+        #[cfg(target_os = "android")]
+        if let Err(e) = bring_up_adb() {
+            skyward_sys::kmsg(&format!("adb not brought up: {e:#}"))?;
+        }
         let misc = bcb::misc();
         let message = bcb::read(&misc)?;
         let request = message.request();
         if !request.work.lasts() {
             bcb::clear(&misc)?;
         }
-        let cfg = DeviceConfig::load(Path::new("/").join(ramdisk::CONFIG))?;
         skyward_sys::kmsg(&format!(
-            "{} {} recovery up, misc command {:?} args {:?}, asking for {:?}",
-            cfg.device.codename,
+            "{} {} recovery up, misc command {:?} args {:?}, asking for {:?}",            cfg.device.shown_model.as_deref().unwrap_or(&cfg.device.codename),
             skyward_info::VERSION,
             message.command,
             message.args,
@@ -832,6 +881,86 @@ fn recovery() -> Result<()> {
     })
 }
 
+/// Ask init for the port's adb function and wait until it answers. The
+/// controller init names is not always the one the port uses, so the
+/// vendor's own property stands in where init named none; and where init's
+/// own action ran before the controller was known, the gadget is bound here.
+#[cfg(target_os = "android")]
+fn bring_up_adb() -> Result<()> {
+    let log = |name: &str| {
+        let value = skyward_sys::prop(name).unwrap_or_else(|| "(unset)".to_string());
+        skyward_sys::kmsg(&format!("{name} is {value}"))
+    };
+    for name in ["ro.debuggable", "ro.boot.usbcontroller", "vendor.usb.controller", "sys.usb.controller", "sys.usb.config"] {
+        log(name)?;
+    }
+    if skyward_sys::prop("sys.usb.controller").is_none()
+        && let Some(controller) = skyward_sys::prop("vendor.usb.controller")
+    {
+        skyward_sys::set_prop("sys.usb.controller", &controller)?;
+    }
+    if skyward_sys::prop("sys.usb.config").as_deref() != Some("adb") {
+        skyward_sys::set_prop("sys.usb.config", "adb")?;
+    }
+    match skyward_sys::wait_prop("sys.usb.state", "adb", std::time::Duration::from_secs(10)) {
+        Ok(()) => {
+            skyward_sys::kmsg("the port answers as adb")?;
+            return Ok(());
+        }
+        Err(e) => skyward_sys::kmsg(&format!("adb not brought up on the port: {e:#}"))?,
+    }
+    // init's own action may have run before the controller was named, so
+    // the gadget was never bound; bind it now that the controller is known
+    // and adbd has made its function ready. A gadget bound with no function
+    // behind it would come up as an empty port.
+    let ready = skyward_sys::prop("sys.usb.ffs.ready").as_deref() == Some("1");
+    let linked = Path::new("/config/usb_gadget/g1/configs/b.1/f1").exists();
+    if ready
+        && linked
+        && let Some(controller) = skyward_sys::prop("sys.usb.controller")
+        && Path::new("/config/usb_gadget/g1/UDC").exists()
+    {
+        match std::fs::write("/config/usb_gadget/g1/UDC", &controller) {
+            Ok(()) => skyward_sys::kmsg(&format!("the port is bound to {controller}"))?,
+            Err(e) => skyward_sys::kmsg(&format!("the port is not bound to {controller}: {e}"))?,
+        }
+    }
+    for name in ["sys.usb.controller", "sys.usb.config", "sys.usb.state", "sys.usb.ffs.ready", "init.svc.adbd"] {
+        log(name)?;
+    }
+    Ok(())
+}
+
+/// The installed vendor partition carries the key service's program but,
+/// on the PD2254, not the interface library that program was built
+/// against: the recovery's own vendor directory has it. Keep those
+/// before the partition is mounted over the directory they lie in, where
+/// the program's library search already reaches.
+#[cfg(target_os = "android")]
+fn keep_keymint_libraries() -> Result<()> {
+    const FROM: &str = "/vendor/lib64";
+    const TO: &str = "/system/lib64";
+    let mut kept = Vec::new();
+    for entry in std::fs::read_dir(FROM).with_context(|| format!("read {FROM}"))? {
+        let entry = entry.with_context(|| format!("read {FROM}"))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("android.hardware.security.keymint-") {
+            continue;
+        }
+        let to = Path::new(TO).join(name.as_ref());
+        // The recovery's own system copy may name the same library by a
+        // symlink into the vendor directory; that one is left as it is.
+        if std::fs::symlink_metadata(&to).is_ok() {
+            continue;
+        }
+        std::fs::copy(entry.path(), &to).with_context(|| format!("copy {} to {}", entry.path().display(), to.display()))?;
+        kept.push(name.into_owned());
+    }
+    skyward_sys::kmsg(&format!("kept {} of the recovery's key service libraries: {}", kept.len(), kept.join(", ")))?;
+    Ok(())
+}
+
 /// Map and mount the slot's partitions from super, then bring up what runs
 /// from them, and give the programs the partitions name for the phone's
 /// keys, which the recovery keeps running from then on. Recovery has to
@@ -839,6 +968,12 @@ fn recovery() -> Result<()> {
 /// reason goes to the kernel log instead.
 #[cfg(target_os = "android")]
 fn prepare(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<Vec<skyward_config::Service>> {
+    // The recovery's own vendor directory is about to be covered by the
+    // installed partition; what the key service needs from it is kept
+    // where the installed program searches.
+    if let Err(e) = keep_keymint_libraries() {
+        skyward_sys::kmsg(&format!("the recovery's key service libraries not kept: {e:#}"))?;
+    }
     match skyward_vab::mount_partitions(slot) {
         Ok(mounts) => {
             for d in &mounts.damaged {
@@ -867,7 +1002,7 @@ fn prepare(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<Vec<skyward_co
 fn info(config: &str) -> Result<()> {
     let cfg = DeviceConfig::load(config)?;
     let i = skyward_info::collect(&cfg)?;
-    println!("model         = {} ({})", i.model, i.codename);
+    println!("model         = {} ({})", i.model, i.shown);
     println!("soc           = {:?}", i.soc);
     println!("cpu           = {} cores, max {:?} kHz", i.cpu.cores, i.cpu.max_khz);
     println!("ram           = {} KiB", i.ram_kib);

@@ -663,8 +663,23 @@ fn phone(slot: Slot) -> Result<Phone> {
         _ => None,
     };
     Ok(Phone {
-        device: prop("ro.product.device").context("ro.product.device is unset")?,
-        serial: prop("ro.serialno").unwrap_or_default(),
+        // Android's property service builds `ro.product.device` from the
+        // partition-specific names as the system starts; a recovery sees
+        // only what the build.prop files hold, and vivo keeps the name in
+        // `ro.product.system.device` and its siblings instead.
+        device: [
+            "ro.product.device",
+            "ro.product.system.device",
+            "ro.product.vendor.device",
+            "ro.product.odm.device",
+            "ro.product.product.device",
+            "ro.product.mod_device",
+            "ro.product.name",
+        ]
+        .iter()
+        .find_map(|name| props.get(*name).filter(|value| !value.is_empty()).cloned())
+        .context("the installed system says no product device")?,
+        serial: prop("ro.serialno").or_else(|| props.get("ro.serialno").cloned()).unwrap_or_default(),
         installed,
     })
 }

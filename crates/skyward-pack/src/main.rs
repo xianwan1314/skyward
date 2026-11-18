@@ -68,6 +68,11 @@ enum Cmd {
         /// The monospaced typeface's licence, which goes with it.
         #[arg(long)]
         mono_license: PathBuf,
+        /// A folder of shared libraries to put in the recovery's own
+        /// system/lib64, for a program it runs that asks for libraries the
+        /// stock ramdisk leaves out.
+        #[arg(long)]
+        libraries: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -125,7 +130,7 @@ fn main() -> Result<()> {
             img.kernel = BootImage::read(&kernel)?.kernel;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, out } => {
+        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, libraries, out } => {
             let size = partition_size(&stock)?;
             let mut img = BootImage::read(&stock)?;
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
@@ -155,6 +160,15 @@ fn main() -> Result<()> {
                 rd.add(paths::TASK_PROFILES, 0o644, TASK_PROFILES.to_vec())?;
             }
             rd.add(paths::MTP_RC, 0o644, MTP_RC.to_vec())?;
+            // The recovery's adbd is a disabled service, and the recovery
+            // program that would start it is Skyward now; a boot that has
+            // already set the port's configuration asks init for no change,
+            // so the property action that starts it is not always taken.
+            // Start it with the default class at boot instead.
+            enable_adbd(&mut rd)?;
+            if let Some(dir) = &libraries {
+                add_libraries(&mut rd, dir)?;
+            }
             // On an unlocked device adbd keeps root when ro.secure is 0 and
             // lets any computer in without authorization when ro.adb.secure is
             // 0; init lets a later line of a property file override an earlier
@@ -186,6 +200,57 @@ fn main() -> Result<()> {
             described::take(&stock.package, &partitions, &out)
         }
     }
+}
+
+/// The recovery's init script, where its adbd service is described.
+const INIT_RC: &str = "system/etc/init/hw/init.rc";
+
+/// Start the recovery's adbd with the default class at boot, so the port
+/// answers from the first moment: a stock recovery's own program starts the
+/// service, and Skyward, which takes that program's place, does not.
+fn enable_adbd(rd: &mut Ramdisk) -> Result<()> {
+    const ADBD: &str = "service adbd /system/bin/adbd --root_seclabel=u:r:su:s0 --device_banner=recovery\n    disabled\n";
+    const ENABLED: &str = "service adbd /system/bin/adbd --root_seclabel=u:r:su:s0 --device_banner=recovery\n";
+    let entry = rd.find(INIT_RC).with_context(|| format!("{INIT_RC} is not in the ramdisk"))?;
+    let text = String::from_utf8_lossy(&entry.data).into_owned();
+    // A recovery of another make may describe adbd otherwise; its own
+    // description is left as it is, and the build is told so.
+    if !text.contains(ADBD) {
+        eprintln!("{INIT_RC} describes adbd otherwise; it is left as it is");
+        return Ok(());
+    }
+    rd.replace(INIT_RC, text.replace(ADBD, ENABLED).into_bytes())?;
+    Ok(())
+}
+
+/// Put every file in `dir` into the recovery's own system library folder,
+/// replacing one it already has, for a program the recovery runs that asks
+/// for libraries the stock ramdisk leaves out.
+fn add_libraries(rd: &mut Ramdisk, dir: &Path) -> Result<()> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .with_context(|| format!("read {}", dir.display()))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("read {}", dir.display()))?;
+    files.sort_by_key(|entry| entry.file_name());
+    for file in files {
+        let name = file.file_name();
+        let name = name.to_string_lossy();
+        let into = format!("system/lib64/{name}");
+        let data = std::fs::read(file.path()).with_context(|| format!("read {}", file.path().display()))?;
+        match rd.find(&into) {
+            Some(e) if e.mode & 0o170000 == 0o100000 => rd.replace(&into, data)?,
+            // A stock ramdisk may leave a link where the vendor partition is
+            // expected to carry the library; a recovery mounts that partition
+            // but does not go where the link points, so a real file takes the
+            // link's place.
+            Some(_) => {
+                rd.entries.retain(|e| e.name != into);
+                rd.add(&into, 0o644, data)?;
+            }
+            None => rd.add(&into, 0o644, data)?,
+        }
+    }
+    Ok(())
 }
 
 /// The partition a recovery is made on, as a full update package names it.

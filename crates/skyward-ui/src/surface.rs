@@ -492,8 +492,10 @@ pub mod kms {
         crtc: drm::control::crtc::Handle,
         active: property::Handle,
         mode_id: property::Handle,
-        /// The panel's preferred mode, which it comes up in, and its
-        /// fastest, which it switches to after, where that is another.
+        /// The mode the panel comes up in — the slowest of the size the
+        /// configuration asks for, or the panel's preferred mode where the
+        /// panel has no mode of that size — and its fastest, which it
+        /// switches to after, where that is another.
         preferred: property::Value<'static>,
         fastest: Option<property::Value<'static>>,
         /// The sub-pixel rendering setup the CRTC takes with each mode,
@@ -515,7 +517,12 @@ pub mod kms {
     }
 
     impl KmsSurface {
-        pub fn open(path: &str) -> Result<Self> {
+        /// Bring up the panel, in the size `wanted` where the panel has a
+        /// mode of it and in the panel's preferred size otherwise. The pages
+        /// lay themselves out for the size the surface reports, so a panel
+        /// whose preferred mode is smaller than the mode it can run gives
+        /// the larger one when the device configuration asks for it.
+        pub fn open(path: &str, wanted: Option<(u32, u32)>) -> Result<Self> {
             let card = open_card(path)?;
             let res = card.resource_handles().context("read KMS resources")?;
 
@@ -533,16 +540,45 @@ pub mod kms {
                 .iter()
                 .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
                 .ok_or_else(|| anyhow!("the panel reports no preferred mode"))?;
-            // The fastest refresh at the preferred size, the first listed among
-            // equals: Android scrolls at it, and the 13 Ultra's touch reports
-            // come at the same 120 Hz.
-            let mode = *conn
-                .modes()
-                .iter()
-                .filter(|m| m.size() == preferred.size())
-                .rev()
-                .max_by_key(|m| m.vrefresh())
-                .expect("the preferred mode itself has the preferred size");
+            // The size the pages are laid out for: the one asked for where
+            // the panel lists a mode of it, else the preferred mode's.
+            let wanted = wanted.filter(|(w, h)| *w > 0 && *h > 0).and_then(|(w, h)| {
+                conn.modes().iter().find(|m| m.size() == (w as u16, h as u16)).map(|m| m.size())
+            });
+            let mut size = wanted.unwrap_or(preferred.size());
+            let conn_props = Props::read(&card, conn.handle())?;
+            // The CRTC is set to the slowest mode of that size first and then
+            // switched to the fastest, as `to_fastest` says why; the first
+            // listed among equals in both.
+            let mode_of = |size: (u16, u16), fastest: bool| {
+                let at = conn.modes().iter().filter(|m| m.size() == size);
+                if fastest {
+                    at.rev().max_by_key(|m| m.vrefresh()).expect("the size came from a mode")
+                } else {
+                    at.min_by_key(|m| m.vrefresh()).expect("the size came from a mode")
+                }
+            };
+            let (base, mode, layout) = loop {
+                let base = mode_of(size, false);
+                let mode = mode_of(size, true);
+                let layout = match conn_props.get("mode_properties") {
+                    Ok((_, blob)) => {
+                        let text = card.get_property_blob(blob).context("read mode_properties")?;
+                        SdeMode::find(&String::from_utf8_lossy(&text), &mode.name().to_string_lossy())
+                    }
+                    Err(_) => Ok(SdeMode { mixers: 1, dsc: false }),
+                };
+                match layout {
+                    Ok(layout) => break (base, mode, layout),
+                    // A panel that lists the size but does not describe its
+                    // topology comes up in the size it does describe.
+                    Err(e) if size != preferred.size() => {
+                        eprintln!("the panel describes no topology for {size:?}, falling back: {e:#}");
+                        size = preferred.size();
+                    }
+                    Err(e) => return Err(e),
+                }
+            };
             let (w, h) = (mode.size().0 as u32, mode.size().1 as u32);
 
             // The CRTC already driving the panel, or the first one an
@@ -574,14 +610,6 @@ pub mod kms {
             // starts posted to the hardware. With one plane across both
             // mixers, no DSC selection and the default trigger, the 13
             // Ultra's panel tore while scrolling.
-            let conn_props = Props::read(&card, conn.handle())?;
-            let layout = match conn_props.get("mode_properties") {
-                Ok((_, blob)) => {
-                    let text = card.get_property_blob(blob).context("read mode_properties")?;
-                    SdeMode::find(&String::from_utf8_lossy(&text), &mode.name().to_string_lossy())?
-                }
-                Err(_) => SdeMode { mixers: 1, dsc: false },
-            };
             let strips = layout.mixers as usize;
             if w % layout.mixers != 0 {
                 return Err(anyhow!("{w} pixels do not split into {strips} strips"));
@@ -643,8 +671,8 @@ pub mod kms {
                 }
             }
             let crtc_props = Props::read(&card, crtc)?;
-            let blob = card.create_property_blob(&mode).context("create mode blob")?;
-            let first = card.create_property_blob(preferred).context("create mode blob")?;
+            let blob = card.create_property_blob(mode).context("create mode blob")?;
+            let first = card.create_property_blob(base).context("create mode blob")?;
             req.add_property(conn.handle(), conn_props.handle("CRTC_ID")?, property::Value::CRTC(Some(crtc)));
             // The mode is DSC-compressed: select its DSC variant, as Android's
             // compositor does.
@@ -709,7 +737,7 @@ pub mod kms {
             // The panel comes up in its preferred mode, then switches to the
             // fastest, as `to_fastest` says why.
             commit(&card, req, AtomicCommitFlags::ALLOW_MODESET).context("set the panel mode")?;
-            let fastest = (mode.vrefresh() != preferred.vrefresh()).then_some(blob);
+            let fastest = (mode.vrefresh() != base.vrefresh()).then_some(blob);
 
             let ids: Vec<u32> = planes.iter().map(|p| u32::from(p.0)).collect();
             let summary = format!(

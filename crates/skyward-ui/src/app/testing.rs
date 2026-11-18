@@ -18,6 +18,7 @@ pub(super) fn info() -> DeviceInfo {
     DeviceInfo {
         model: "Xiaomi 13 Ultra".into(),
         codename: "ishtar".into(),
+        shown: "Xiaomi 13 Ultra".into(),
         soc: None,
         cpu: Cpu { cores: 8, max_khz: Some(3_187_200) },
         ram_kib: 15_556_972,
@@ -33,6 +34,7 @@ pub(super) fn info() -> DeviceInfo {
         slot: None,
         snapshot: SnapshotState::None,
         boot: Boot { unlocked: None, verified: None },
+        authors: None,
     }
 }
 

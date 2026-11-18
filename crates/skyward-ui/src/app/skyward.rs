@@ -105,6 +105,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "online Skyward updates are disabled"]
     fn skyward_updates_from_its_newest_release_and_its_page_stays_until_the_build_is_in() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Settings, W, H, PPD);
@@ -148,6 +149,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "online Skyward updates are disabled"]
     fn the_skyward_page_asks_github_as_it_opens_once_a_network_is_joined() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Settings, W, H, PPD);

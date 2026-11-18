@@ -225,8 +225,8 @@ pub fn home(cx: &Ctx) -> Frame {
     out.push(Hit { rect: bar, action: Action::Open(Screen::Search) });
 
     let sub = match &i.os_version {
-        Some(v) => format!("{} · {v}", i.codename),
-        None => i.codename.clone(),
+        Some(v) => format!("{} · {v}", i.shown),
+        None => i.shown.clone(),
     };
     // Under the phone's name the card holds only what asks for something to
     // be done: a battery too low to install on, an update waiting to merge,
@@ -244,10 +244,6 @@ pub fn home(cx: &Ctx) -> Frame {
     if let Some((title, note)) = &low {
         rows.push(Row::new(title).icon(RED, Icon::Battery).subtitle(note).trail(Trail::None));
         opens.push(None);
-    }
-    if let Some(note) = fmt::snapshot_note(l, &i.snapshot) {
-        rows.push(Row::new(fmt::snapshot(l, &i.snapshot)).icon(ORANGE, Icon::Layers).subtitle(note).trail(Trail::Arrow));
-        opens.push(Some(Action::Open(Screen::Update)));
     }
     if let Some((title, note)) = &next {
         rows.push(Row::new(title).icon(ORANGE, Icon::Power).subtitle(note).trail(Trail::Arrow));
@@ -333,20 +329,6 @@ fn systems_value(cx: &Ctx) -> Option<String> {
     }
 }
 
-/// What the advanced page says beside its system update entry: a download
-/// under way, a newer system found, or where an update the system installed
-/// stands.
-fn update_value(cx: &Ctx) -> &'static str {
-    let (s, l) = (cx.state, cx.state.lang);
-    if s.downloading() {
-        return l.pick(DOWNLOADING);
-    }
-    if s.newest().is_some_and(|r| cx.info.os_version.as_deref() != Some(r.version.as_str())) {
-        return l.pick(["有新版本", "有新版本", "New version"]);
-    }
-    fmt::update_value(l, &s.update)
-}
-
 /// Preferences, opening with the stock「显示与亮度」theme previews.
 pub fn settings(cx: &Ctx) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
@@ -389,33 +371,11 @@ pub fn settings(cx: &Ctx) -> Frame {
     let debug = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(TERMINAL)).icon(SLATE, Icon::Terminal)]);
     out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal)]));
     y = widgets::section(&mut c, t, f, debug.bottom, l.pick(["关于", "關於", "About"]));
-    let mut rows = vec![Row::new(l.pick(ABOUT)).trail(Trail::Value(VERSION))];
-    let mut opens = vec![Action::Open(Screen::About)];
-    if s.offers(Screen::SkywardUpdate) {
-        let row = Row::new(l.pick(SKYWARD_UPDATE));
-        rows.push(match skyward_value(cx) {
-            Some(value) => row.trail(Trail::Value(value)),
-            None => row,
-        });
-        opens.push(Action::Open(Screen::SkywardUpdate));
-    }
+    let rows = vec![Row::new(l.pick(ABOUT)).trail(Trail::Value(VERSION))];
+    let opens = vec![Action::Open(Screen::About)];
     let about = widgets::list(&mut c, t, f, y, &rows);
     out.extend(hits(&about.rows, &opens));
     Frame::new(t, fit(c, t, about.bottom), out, l.pick(SETTINGS), top)
-}
-
-/// What the settings page says beside its Skyward update entry: an update
-/// under way, or a newer release found.
-fn skyward_value(cx: &Ctx) -> Option<&'static str> {
-    let (s, l) = (cx.state, cx.state.lang);
-    if s.updating_skyward() {
-        return Some(l.pick(["正在更新", "正在更新", "Updating"]));
-    }
-    match (s.skyward_newest(), &s.skyward_job) {
-        (_, Some(SkywardJob { outcome: Some(SkywardEnd::Updated(_)), .. })) => Some(l.pick(["已更新", "已更新", "Updated"])),
-        (Some(n), _) if n.newer && n.build.is_some() => Some(l.pick(["有新版本", "有新版本", "New version"])),
-        _ => None,
-    }
 }
 
 /// How long the screen stays on with nothing touched, opened from the
@@ -513,7 +473,7 @@ pub fn mount(cx: &Ctx) -> Frame {
 }
 
 /// Who made the recovery, as the About page names them under its version.
-const AUTHOR: &str = "© 2026 Kirk Lin";
+const AUTHOR: &str = "© 2026 kirklin & xiaowan2026";
 
 /// About this device, modelled on the stock「我的设备」: the wordmark, the
 /// version and its author over a moving colour field, and the summary,
@@ -619,7 +579,7 @@ pub fn specs(cx: &Ctx) -> Frame {
         grid.push(Spec { icon: Outline::Screen, label: l.pick(SCREEN_SIZE), value: fmt::inches(d) });
     }
     grid.push(Spec { icon: Outline::Storage, label: l.pick(["存储容量", "儲存容量", "Storage capacity"]), value: fmt::capacity(i.storage.total) });
-    grid.push(Spec { icon: Outline::Tag, label: l.pick(["设备代号", "裝置代號", "Codename"]), value: i.codename.clone() });
+    grid.push(Spec { icon: Outline::Tag, label: l.pick(["设备代号", "裝置代號", "Codename"]), value: i.shown.clone() });
     let mut y = widgets::spec_grid(&mut c, t, f, top, &grid);
 
     if let Some(v) = &i.os_version {
@@ -628,8 +588,14 @@ pub fn specs(cx: &Ctx) -> Frame {
     if let Some(r) = &i.android {
         y = widgets::info_card(&mut c, t, f, y + gap, &[(l.pick(ANDROID_VERSION), fmt::android(l, r, i.security_patch.as_ref()))]);
     }
+    // Who made the recovery stands under its version, as the phones this
+    // one is made for show it.
+    let recovery = match &i.authors {
+        Some(authors) => format!("Skyward {VERSION}\n{authors}"),
+        None => format!("Skyward {VERSION}"),
+    };
     y = widgets::info_card(&mut c, t, f, y + gap, &[
-        (l.pick(["Recovery 版本", "Recovery 版本", "Recovery version"]), format!("Skyward {VERSION}")),
+        (l.pick(["Recovery 版本", "Recovery 版本", "Recovery version"]), recovery),
         (l.pick(["内核版本", "核心版本", "Kernel version"]), i.kernel.clone()),
     ]);
 
@@ -1540,7 +1506,7 @@ fn finished(
             next.bottom
         }
         Outcome::Refused(r) => {
-            let reason = fmt::refusal(l, r, &cx.info.codename, source, cx.state.time_zone);
+            let reason = fmt::refusal(l, r, &cx.info.shown, source, cx.state.time_zone);
             let y = widgets::list(c, t, f, top, &[standing(l.pick(["无法安装", "無法安裝", "Can't install"]), ORANGE, Icon::Install, &reason)]).bottom;
             // What the system asked for and did not go in leaves the phone
             // where it was, from which it may go back to the system.
@@ -2207,7 +2173,7 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Row::new(l.pick(RELABEL)).icon(PURPLE, Icon::Shield),
         Row::new(l.pick(FILESYSTEMS)).icon(RED, Icon::Mount),
         Row::new(l.pick(LOGS)).icon(ORANGE, Icon::Log),
-        Row::new(l.pick(UPDATE)).icon(GREEN, Icon::Layers).trail(Trail::Value(update_value(cx))),
+        Row::new(l.pick(UPDATE)).icon(GREEN, Icon::Layers),
     ]);
     let out = hits(&tools.rows, &[
         Action::Open(Screen::Files),
@@ -2492,7 +2458,7 @@ pub fn part_work(cx: &Ctx) -> Frame {
         None if work.asked => notes.push(l.pick(leaving).into()),
         None => notes.push(verb.hold_on(l)),
         Some(Err(stop)) => {
-            let (what, detail) = fmt::part_stop(l, stop, &cx.info.codename);
+            let (what, detail) = fmt::part_stop(l, stop, &cx.info.shown);
             notes.push(what);
             notes.extend(detail);
         }
@@ -2886,9 +2852,9 @@ pub fn wlan(cx: &Ctx) -> Frame {
     match &w.power {
         Power::Off => {
             let note = l.pick([
-                "开启后，可连接 WLAN 下载系统更新和 Skyward 新版本。",
-                "開啟後，可連接 Wi-Fi 下載系統更新和 Skyward 新版本。",
-                "When on, system updates and new versions of Skyward can download over Wi-Fi.",
+                "开启后，可连接 WLAN。",
+                "開啟後，可連接 Wi-Fi。",
+                "When on, the recovery can join Wi-Fi networks.",
             ]);
             y = widgets::footnote(&mut c, t, f, y, note)
         }
@@ -3839,7 +3805,7 @@ pub fn fastboot(cx: &Ctx) -> Frame {
     let mut facts = vec![
         Row::new("fastbootd").trail(Trail::Text(running)),
         Row::new("USB").trail(Trail::Text(link)),
-        Row::new(l.pick(["设备代号", "裝置代號", "Codename"])).trail(Trail::Text(&i.codename)),
+        Row::new(l.pick(["设备代号", "裝置代號", "Codename"])).trail(Trail::Text(&i.shown)),
     ];
     if let Some(letter) = slot {
         facts.push(Row::new(l.pick(CURRENT_SLOT)).trail(Trail::Text(letter)));

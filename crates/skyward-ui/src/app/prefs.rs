@@ -90,14 +90,15 @@ mod tests {
     fn the_file_transfer_switch_has_the_runtime_follow_it() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Settings, W, H, PPD);
-        assert!(app.state.file_transfer, "on until turned off");
+        assert!(!app.state.file_transfer, "off until turned on");
         let (_, y) = spot(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer));
         if y > H as f32 * 0.9 {
             scroll_to(&mut app, &f, y - H as f32 * 0.8, 0);
         }
-        assert_eq!(tap_at(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer), 2000), [Effect::FileTransfer(false)]);
+        assert_eq!(tap_at(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer), 2000), [Effect::FileTransfer(true)]);
+        assert!(app.state.file_transfer);
+        assert_eq!(tap_at(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer), 3000), [Effect::FileTransfer(false)]);
         assert!(!app.state.file_transfer);
-        assert_eq!(tap_at(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer), 3000), [Effect::FileTransfer(true)]);
         app.file_transfer_failed(false, "无法开启文件传输", 4000);
         assert!(!app.state.file_transfer, "the switch shows how it stands");
     }

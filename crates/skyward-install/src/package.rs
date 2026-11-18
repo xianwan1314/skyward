@@ -87,8 +87,8 @@ pub fn identify<R: Read + Seek>(mut file: R) -> Result<Package> {
     }
     file.seek(SeekFrom::Start(0)).context("rewind the package")?;
     let mut zip = ZipArchive::new(file).context("read the zip directory")?;
-    if zip.index_for_name(PAYLOAD).is_some() {
-        return update(&mut zip).map(Package::Update);
+    if let Some(prefix) = update_prefix(&zip) {
+        return update(&mut zip, &prefix).map(Package::Update);
     }
     if skyward_systems::package::is_system(&zip) {
         return skyward_systems::package::read(&mut zip).map(Package::System);
@@ -99,10 +99,27 @@ pub fn identify<R: Read + Seek>(mut file: R) -> Result<Package> {
     Ok(Package::Unknown)
 }
 
-fn update<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Update> {
-    let properties = text(zip, PROPERTIES)?;
-    let metadata = Metadata::parse(&text(zip, METADATA)?);
-    let payload = zip.by_name(PAYLOAD).context("open payload.bin")?;
+/// The folder an update's files are in, with its trailing slash: empty
+/// where they sit at the zip's top, or the folder's name where the package
+/// wraps them in one, as vivo's full packages do.
+fn update_prefix<R: Read + Seek>(zip: &ZipArchive<R>) -> Option<String> {
+    if zip.index_for_name(PAYLOAD).is_some() {
+        return Some(String::new());
+    }
+    zip.file_names()
+        .filter_map(|name| name.strip_suffix(PAYLOAD))
+        .filter(|prefix| !prefix.is_empty())
+        .find(|prefix| {
+            zip.index_for_name(&format!("{prefix}{PROPERTIES}")).is_some()
+                && zip.index_for_name(&format!("{prefix}{METADATA}")).is_some()
+        })
+        .map(str::to_string)
+}
+
+fn update<R: Read + Seek>(zip: &mut ZipArchive<R>, prefix: &str) -> Result<Update> {
+    let properties = text(zip, &format!("{prefix}{PROPERTIES}"))?;
+    let metadata = Metadata::parse(&text(zip, &format!("{prefix}{METADATA}"))?);
+    let payload = zip.by_name(&format!("{prefix}{PAYLOAD}")).context("open payload.bin")?;
     // update_engine reads the payload straight out of the zip, so it has
     // to be stored as is.
     if payload.compression() != CompressionMethod::Stored {
@@ -301,6 +318,26 @@ METADATA_SIZE=1024
             ("payload.bin", payload, CompressionMethod::Stored),
             ("payload_properties.txt", PROPERTIES_TEXT.as_bytes(), CompressionMethod::Stored),
             ("META-INF/com/android/metadata", METADATA_TEXT.as_bytes(), CompressionMethod::Deflated),
+        ]);
+        let Package::Update(u) = identify(Cursor::new(&bytes)).unwrap() else { panic!("an update package") };
+        let at = u.payload_offset as usize;
+        assert_eq!(&bytes[at..at + payload.len()], payload);
+        assert_eq!(u.payload_size, payload.len() as u64);
+        assert_eq!(u.properties, PROPERTIES_TEXT);
+        assert_eq!(u.version(), Some("OS3.0.306.0.WMACNXM"));
+    }
+
+    #[test]
+    fn an_update_wrapped_in_a_folder_gives_where_its_payload_starts() {
+        let payload = b"CrAU\0\0\0\0\0\0\0\x02rest of the payload";
+        let folder = "20260908233622fc32910117df9c9c0f42686da3c6583d/";
+        let payload_name = format!("{folder}payload.bin");
+        let properties_name = format!("{folder}payload_properties.txt");
+        let metadata_name = format!("{folder}META-INF/com/android/metadata");
+        let bytes = zip_with(&[
+            (payload_name.as_str(), payload, CompressionMethod::Stored),
+            (properties_name.as_str(), PROPERTIES_TEXT.as_bytes(), CompressionMethod::Stored),
+            (metadata_name.as_str(), METADATA_TEXT.as_bytes(), CompressionMethod::Deflated),
         ]);
         let Package::Update(u) = identify(Cursor::new(&bytes)).unwrap() else { panic!("an update package") };
         let at = u.payload_offset as usize;

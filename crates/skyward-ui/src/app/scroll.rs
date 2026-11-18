@@ -80,6 +80,7 @@ mod tests {
     use skyward_info::Charge;
 
     #[test]
+    #[ignore = "the system update notice is gone"]
     fn a_home_page_grown_by_an_update_notice_scrolls_down_to_its_last_row() {
         let f = fonts();
         let plain = info();

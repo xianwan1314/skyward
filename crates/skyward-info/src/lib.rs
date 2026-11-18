@@ -29,6 +29,9 @@ const SYS_BLOCK: &str = "/sys/class/block";
 pub struct DeviceInfo {
     pub model: String,
     pub codename: String,
+    /// The name the pages and the log show for the phone: the configured
+    /// display name, or its codename.
+    pub shown: String,
     pub soc: Option<skyward_config::Names>,
     pub cpu: Cpu,
     /// `MemTotal` in KiB.
@@ -49,6 +52,9 @@ pub struct DeviceInfo {
     pub slot: Option<Slot>,
     pub snapshot: SnapshotState,
     pub boot: Boot,
+    /// Who made the recovery and who made it run on this phone, from the
+    /// configuration.
+    pub authors: Option<String>,
 }
 
 /// `ro.build.version.security_patch`, a calendar date.
@@ -154,10 +160,17 @@ pub fn collect_with(cfg: &DeviceConfig, battery: Option<Battery>) -> Result<Devi
     };
     let system = SystemProps::current()?;
     Ok(DeviceInfo {
-        // The system names the exact edition; the configured model covers a
-        // system whose partitions are not mounted.
-        model: system.get("ro.product.marketname").unwrap_or_else(|| cfg.device.model.clone()),
+        // A name the configuration shows stands first; otherwise the system
+        // names the exact edition, and the configured model covers a system
+        // whose partitions are not mounted.
+        model: cfg
+            .device
+            .shown_model
+            .clone()
+            .or_else(|| system.get("ro.product.marketname"))
+            .unwrap_or_else(|| cfg.device.model.clone()),
         codename: cfg.device.codename.clone(),
+        shown: cfg.device.shown_model.clone().unwrap_or_else(|| cfg.device.codename.clone()),
         soc: cfg.device.soc.clone(),
         cpu: cpu(Path::new(CPU))?,
         ram_kib: mem_total(&read("/proc/meminfo")?)?,
@@ -173,6 +186,7 @@ pub fn collect_with(cfg: &DeviceConfig, battery: Option<Battery>) -> Result<Devi
         slot: skyward_vab::current_slot()?,
         snapshot: skyward_vab::snapshot_state()?,
         boot: Boot { unlocked, verified: skyward_block::boot_param("androidboot.verifiedbootstate")? },
+        authors: cfg.device.authors.clone(),
     })
 }
 

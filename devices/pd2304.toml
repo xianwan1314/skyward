@@ -1,0 +1,92 @@
+# Skyward device configuration for vivo iQOO 11S (PD2304 / V2304A)
+# Platform: SM8550 (kalama), Snapdragon 8 Gen 2, 1440x3200, A/B + dynamic partitions.
+#
+# 底包：官方全量包 PD2304_A_16.3.13.5.W10.V000L1.zip 里的 recovery 分区，
+# 已与真机 /dev/block/by-name/recovery_a 的 SHA-256 比对一致
+# （c2c43ec73ece5cd2d0592018761d4037cfcffbe1fb3e8480af32e1d43df7920f）。
+
+[device]
+codename = "PD2304"
+brand = "vivo"
+model = "iQOO 11S"
+shown_model = "iQOO 11S"
+ab = true
+soc = { hans = "第二代骁龙8移动平台", hant = "第二代驍龍8移動平台", en = "Snapdragon 8 Gen 2 Mobile Platform" }
+os_version_prop = "ro.vivo.build.version.incremental"
+# 显示在「设备信息 → Recovery 版本」下面：原作与本次移植的维护者。
+authors = "Skyward 原作：Kirk Lin（github.com/kirklin/skyward）\nPD2304 移植：xiaowan2026（酷安 @小宛2026，基于 Qingizi7 的开源移植）\n开源免费，禁止倒卖"
+
+[display]
+# 真机面板原生 1440x3200。内核 DSI 连接器的首选模式是 1080x2400，但 Skyward
+# 现在会按这里的 width/height 去匹配连接器模式（选中同尺寸下最慢的一档做初始
+# 模式，再切到同尺寸最快的 144Hz），所以配原生分辨率、density 640。
+# 1440 / (640/160) = 360dp，标准手机宽度；若面板没有该尺寸的模式则回退到首选模式。
+width = 1440
+height = 3200
+density = 640
+# 6.78 英寸，3200x1440 直屏
+diagonal = 6.78
+
+[modules]
+# 取 vendor / vendor_dlkm 两个来源（真机上这两处都装着同一套 317 个模块），
+# 触摸驱动是 vivo_ts；init 自己也会 modprobe 它，这里多写一次无副作用。
+sources = ["vendor", "vendor_dlkm"]
+load = ["vivo_ts"]
+
+[firmware]
+# modem 分区里是 ADSP、充电与无线的固件。Skyward 启动时先把它挂到 /firmware，
+# 再通知 init 拉起 ADSP；否则 vendor 挂到 /vendor 后 adsp.b11 不可见，
+# 充电驱动不 probe，电池与温度读数就都没有。
+partition = "modem"
+
+[usb]
+# vivo 的 vusb 驱动默认只做设备端；写成 enabled 后插 OTG 转接头才会切到主机模式，
+# 否则 U 盘永远枚举不出来（接电脑时仍是设备端，adb 正常）。
+host_mode = { path = "/sys/devices/virtual/vusb/usb0/host_mode", value = "enabled" }
+
+[haptics]
+# 马达由 vivo 私有驱动 qcom-haptics 播放，写时长再触发（真机已验证两个节点可写）。
+strength = { lightest = 0.4, strongest = 1.0 }
+timed = { duration = "/sys/class/qcom-haptics/duration", activate = "/sys/class/qcom-haptics/activate", click = 40, ticks = 15 }
+
+[wlan]
+# QCA6490 系列（kiwi_v2，WCN6855/WCN6856），驱动依赖 cnss2 等，模块依赖由 modules.dep 解析。
+modules = ["qca_cld3_kiwi_v2"]
+writes = [{ path = "/sys/devices/platform/soc/b0000000.qcom,cnss-qca-converged/fs_ready", value = "1" }]
+firmware = [
+    { name = "wlan/qca_cld/kiwi_v2/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/kiwi_v2/WCNSS_qcom_cfg.ini" },
+]
+interface = "wlan0"
+supplicant = "/system/bin/wpa_supplicant"
+libraries = ["/system/lib64", "/vendor/lib64"]
+service = "android.hardware.wifi.supplicant.ISupplicant/default"
+# QTI 的 supplicant 启动时还会注册 vendor AIDL 实例，而 vivo 的 VINTF 只把它
+# 声明成 HIDL；不告知 servicemanager 的话注册被拒，wpa_supplicant 立刻退出(255)。
+# 真机 service list 里两个实例都在。
+services = ["vendor.qti.hardware.wifi.supplicant.ISupplicantVendor/default"]
+# vivo 系统自己的联网探测页（settings get global captive_portal_http_url）。
+probe = "http://wifi.vivo.com.cn/generate_204"
+
+[backup]
+# 基带/EFS 与传感器校准；真机 by-name 里这些分区都在。
+efs = ["modemst1", "modemst2", "fsg", "fsc", "persist"]
+# 安全世界自己维护的目录，写回旧副本会打不开。
+data_skipped = ["vendor/fingerprint", "vendor/faceunlock", "vendor/tzstorage", "vendor/qtee", "vendor/tui", "vendor/esehal"]
+
+[wipe]
+# vivo 在 data 分区里放日志与崩溃记录的目录（真机实测存在）。
+logs = [
+    "/data/bbklog",
+    "/data/logData",
+    "/data/logIface",
+    "/data/vivodump",
+    "/data/vendor/bbklog",
+    "/data/vendor/ramdump",
+    "/data/vendor/ssrdump",
+    "/data/vendor/tombstones",
+    "/data/vendor/wifi",
+]
+
+# [stock] 未填写：vivo 的官方全量包没有可直链的 HTTPS 地址，
+# 底包请自行解包后放到 stock/recovery.img（本机已用真机分区校验过）。
+# [update] 未填写：vivo 的 OTA 接口与上游的小米协议不同，未适配，相关入口在移植时已移除。

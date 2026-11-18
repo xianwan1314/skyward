@@ -104,6 +104,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "the system update page is gone"]
     fn the_update_page_asks_for_the_newest_system_and_downloads_its_full_package_to_install() {
         let f = fonts();
         let i = DeviceInfo { os_version: Some("OS3.0.308.0.WMACNXM".into()), ..info() };
@@ -146,6 +147,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "the system update page is gone"]
     fn the_update_page_asks_the_server_as_it_opens_once_a_network_is_joined() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Advanced, W, H, PPD);

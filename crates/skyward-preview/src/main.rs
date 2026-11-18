@@ -1536,6 +1536,7 @@ fn nezha(cfg: &DeviceConfig) -> DeviceInfo {
     DeviceInfo {
         model: "Xiaomi 17 Ultra by Leica".into(),
         codename: cfg.device.codename.clone(),
+        shown: cfg.device.shown_model.clone().unwrap_or_else(|| cfg.device.codename.clone()),
         soc: cfg.device.soc.clone(),
         cpu: Cpu { cores: 8, max_khz: Some(4_608_000) },
         ram_kib: 15_472_464,
@@ -1563,6 +1564,7 @@ fn nezha(cfg: &DeviceConfig) -> DeviceInfo {
         slot: Some(Slot::B),
         snapshot: SnapshotState::None,
         boot: Boot { unlocked: Some(true), verified: Some("orange".into()) },
+        authors: cfg.device.authors.clone(),
     }
 }
 

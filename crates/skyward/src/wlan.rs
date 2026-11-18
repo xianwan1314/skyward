@@ -645,6 +645,15 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
 
 /// Put a file the driver asks for where the firmware loader looks.
 fn place(file: &Firmware) -> Result<()> {
+    // The stock recovery's own script links /etc/firmware to
+    // /system/etc/firmware, and /etc is a link to /system/etc, so the link
+    // points at itself where the ramdisk has no folder there; take it away
+    // so the folders below can be made.
+    if let Ok(target) = fs::read_link(FIRMWARE)
+        && (target == Path::new("/system/etc/firmware") || target == Path::new(FIRMWARE))
+    {
+        fs::remove_file(FIRMWARE).with_context(|| format!("take away the link at {FIRMWARE}"))?;
+    }
     let to = Path::new(FIRMWARE).join(&file.name);
     let dir = to.parent().expect("a firmware file is in a folder");
     fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;

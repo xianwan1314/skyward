@@ -34,6 +34,12 @@ pub struct Found {
 /// against are opened, on a phone that carries them as a bundle of their
 /// own: each of its programs is given the folder among its own.
 pub fn found(slot: skyward_vab::Slot, libraries: Option<&Path>) -> Result<Found> {
+    // Which copy of libbinder the recovery ramdisk carries decides the
+    // mark every call to the service directory has to bear, and the
+    // directory is the first thing the key services are asked of.
+    let binder = skyward_binder::driver::Binder::open().context("open the driver the service directory answers on")?;
+    let header = skyward_binder::service::choose_header(&binder)?;
+    skyward_sys::kmsg(&format!("the service directory reads the header {header:#x}"))?;
     let mut phone = read(slot, libraries)?;
     let unnamed = naming::steps(&phone)?;
     if !unnamed.is_empty() {

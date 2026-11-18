@@ -72,13 +72,42 @@ fn id() -> u16 {
     (now.subsec_nanos() ^ std::process::id()) as u16
 }
 
-/// The IPv4 addresses of `host`, asked of `servers` in turn.
+/// The IPv4 addresses of `host`, asked of `servers` in turn; where the
+/// network named none, of the servers the recovery carries in its own
+/// `/etc/resolv.conf`, as some hotspots hand out an address and a gateway
+/// and no resolver.
 pub fn lookup(host: &str, servers: &[Ipv4Addr]) -> Result<Vec<Ipv4Addr>> {
     if let Ok(address) = host.parse::<Ipv4Addr>() {
         return Ok(vec![address]);
     }
+    let mut servers: Vec<Ipv4Addr> = servers.to_vec();
+    if servers.is_empty() {
+        servers = carried();
+    }
     let servers: Vec<SocketAddrV4> = servers.iter().map(|server| SocketAddrV4::new(*server, PORT)).collect();
     ask_in_turn(host, &servers)
+}
+
+/// The servers in the recovery's own `/etc/resolv.conf`, in the order it
+/// lists them, each `nameserver <address>` on a line.
+#[cfg(target_os = "android")]
+fn carried() -> Vec<Ipv4Addr> {
+    let Ok(text) = std::fs::read_to_string("/etc/resolv.conf") else { return Vec::new() };
+    text.lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            if words.next()? != "nameserver" {
+                return None;
+            }
+            words.next()?.parse().ok()
+        })
+        .collect()
+}
+
+/// A computer reading this has no recovery's `/etc/resolv.conf` to ask.
+#[cfg(not(target_os = "android"))]
+fn carried() -> Vec<Ipv4Addr> {
+    Vec::new()
 }
 
 /// The IPv4 addresses of `host`, asked of the servers at `servers` one

@@ -9,10 +9,16 @@ pub const PROGRAM: &str = "/system/bin/update_engine_sideload";
 /// Its arguments for `update`, read from the file `package`; it writes
 /// its status lines to `status_fd`.
 pub fn arguments(package: &str, update: &Update, status_fd: i32) -> Vec<String> {
+    // The update_engine vivo builds into its recovery takes the payloads,
+    // offsets and sizes as lists, each with one entry for a package that
+    // carries one payload. The singular `--payload`/`--offset` flags of
+    // the AOSP build are not read, and leave it looking for its default
+    // `/data/payload.bin`.
     vec![
-        format!("--payload=file://{package}"),
-        format!("--offset={}", update.payload_offset),
-        format!("--headers={}", update.properties),
+        format!("--payloads=file://{package}"),
+        format!("--offsets={}", update.payload_offset),
+        format!("--sizes={}", update.payload_size),
+        format!("--headers_pair={}", update.properties),
         format!("--status_fd={status_fd}"),
     ]
 }
@@ -123,9 +129,10 @@ mod tests {
         assert_eq!(
             arguments("/sideload/package.zip", &update, 9),
             [
-                "--payload=file:///sideload/package.zip",
-                "--offset=2365",
-                "--headers=FILE_HASH=abc=\nFILE_SIZE=7103041280\n",
+                "--payloads=file:///sideload/package.zip",
+                "--offsets=2365",
+                "--sizes=7103041280",
+                "--headers_pair=FILE_HASH=abc=\nFILE_SIZE=7103041280\n",
                 "--status_fd=9",
             ]
         );

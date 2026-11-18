@@ -195,7 +195,10 @@ impl Default for State {
             time_zone: 0,
             vibrate: true,
             vibration: SLIDER_START,
-            file_transfer: true,
+            // The port answers as adb alone until file transfer is asked
+            // for, so a phone connected to a computer is not offered its
+            // storage without a hand at the switch.
+            file_transfer: false,
             reboot: 0,
             wipe: [false; WIPES.len()],
             cache_partition: false,

@@ -6,8 +6,14 @@ use crate::image;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use skyward_vab::Slot;
+#[cfg(unix)]
+use std::fs;
 use std::fs::File;
 use std::io::{Cursor, Read};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
 const PARTITION: &str = "recovery";
@@ -57,8 +63,38 @@ impl Kept {
     /// each back; `progress` hears the bytes so far, of all.
     pub fn write(&self, slots: &[Slot], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
         let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(&self.dir, PARTITION, slot)).collect();
+        // The bootloader marks the recovery partition of the slot an update
+        // just wrote read-only, as protection until that slot starts. The
+        // kernel's flag is ours to clear before writing Skyward back there.
+        for device in &devices {
+            clear_read_only(device)?;
+        }
         image::flash(&mut Cursor::new(&self.image), self.image.len() as u64, &devices, progress)
     }
+}
+
+/// Clear the kernel's read-only flag on block device `path`, as `blockdev
+/// --setrw` does. A path that is not a block device, as in the tests, is
+/// left alone.
+#[cfg(unix)]
+fn clear_read_only(path: &Path) -> Result<()> {
+    let kind = fs::metadata(path).with_context(|| format!("look at {}", path.display()))?.file_type();
+    if !kind.is_block_device() {
+        return Ok(());
+    }
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    // BLKROSET: _IO(0x12, 93).
+    const BLKROSET: libc::c_ulong = 0x125d;
+    let zero: libc::c_int = 0;
+    if unsafe { libc::ioctl(file.as_raw_fd(), BLKROSET as _, &zero) } < 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| format!("make {} writable", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn clear_read_only(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 /// What the partition at `path` holds, read past any pages cached of it,

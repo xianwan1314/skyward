@@ -30,14 +30,19 @@ const TICKS_REST: Duration = Duration::from_millis(40);
 /// the click is taken away. So each click is loaded as it is played, at the
 /// strength the slider gives, and taken away once it has played out.
 pub struct Haptics {
-    dev: File,
-    click: Click,
-    ticks: Click,
+    motor: Motor,
     strength: Strength,
     /// The click playing, by its slot and its count, until it is taken
     /// away; a click taken away early by the next is not taken away again.
     playing: Arc<Mutex<Option<(i16, u64)>>>,
     clicks: u64,
+}
+
+/// How a motor is played: through the kernel's force-feedback events, or
+/// by a driver told a length in milliseconds and told to play it.
+enum Motor {
+    Events { dev: File, click: Click, ticks: Click },
+    Timed { duration: PathBuf, activate: PathBuf, click: u32, ticks: u32 },
 }
 
 /// What a click is.
@@ -51,24 +56,44 @@ enum Click {
 }
 
 impl Haptics {
-    /// The force-feedback device and the configured click. Loading a click
-    /// fills the driver's queue with what it plays, so the click is loaded
-    /// only as it is played.
+    /// The motor, opened as the configuration says it is played: a driver
+    /// told a length where it says so, and otherwise the first input device
+    /// that takes periodic force-feedback effects, with the configured
+    /// click. Loading a click fills the driver's queue with what it plays,
+    /// so the click is loaded only as it is played.
     pub fn open(cfg: &skyward_config::Haptics) -> Result<Haptics> {
-        let (path, dev) = motor()?;
-        let hz = resonance(&cfg.resonance)?;
-        let click = match cfg.click {
-            Some(id) => {
-                eprintln!("haptics {}: clicks with waveform {id}, ticks made for a motor swinging at {hz} Hz", path.display());
-                Click::Kept(id)
+        let motor = match &cfg.timed {
+            Some(timed) => {
+                eprintln!(
+                    "haptics {}: clicks of {} ms and ticks of {} ms, played by writing {}",
+                    timed.duration, timed.click, timed.ticks, timed.activate
+                );
+                Motor::Timed {
+                    duration: PathBuf::from(&timed.duration),
+                    activate: PathBuf::from(&timed.activate),
+                    click: timed.click,
+                    ticks: timed.ticks,
+                }
             }
             None => {
-                eprintln!("haptics {}: clicks and ticks made for a motor swinging at {hz} Hz", path.display());
-                Click::Samples { data: made(hz), rate: RATE }
+                let (path, dev) = motor()?;
+                let file = cfg.resonance.as_deref().context("no file says the motor's resonant frequency in")?;
+                let hz = resonance(file)?;
+                let click = match cfg.click {
+                    Some(id) => {
+                        eprintln!("haptics {}: clicks with waveform {id}, ticks made for a motor swinging at {hz} Hz", path.display());
+                        Click::Kept(id)
+                    }
+                    None => {
+                        eprintln!("haptics {}: clicks and ticks made for a motor swinging at {hz} Hz", path.display());
+                        Click::Samples { data: made(hz), rate: RATE }
+                    }
+                };
+                let ticks = Click::Samples { data: ticks(hz), rate: TICKS_RATE };
+                Motor::Events { dev, click, ticks }
             }
         };
-        let ticks = Click::Samples { data: ticks(hz), rate: TICKS_RATE };
-        Ok(Haptics { dev, click, ticks, strength: cfg.strength, playing: Arc::new(Mutex::new(None)), clicks: 0 })
+        Ok(Haptics { motor, strength: cfg.strength, playing: Arc::new(Mutex::new(None)), clicks: 0 })
     }
 
     /// One short click at the strength the slider's `position` gives, after
@@ -86,18 +111,33 @@ impl Haptics {
     /// Play the ticks, or else the click, at `share` of its full strength,
     /// after taking away what still plays.
     fn start(&mut self, ticks: bool, share: f32) -> Result<Duration> {
+        if let Motor::Timed { duration, activate, click, ticks: tick_ms } = &self.motor {
+            let (duration, activate) = (duration.clone(), activate.clone());
+            let ms = if ticks { *tick_ms } else { *click };
+            fs::write(&duration, ms.to_string()).with_context(|| format!("write {ms} ms to {}", duration.display()))?;
+            fs::write(&activate, "1").with_context(|| format!("have {} play it", activate.display()))?;
+            return Ok(Duration::from_millis(u64::from(ms)));
+        }
+        self.start_events(ticks, share)
+    }
+
+    /// Play it through the kernel's force-feedback events.
+    fn start_events(&mut self, ticks: bool, share: f32) -> Result<Duration> {
+        let Motor::Events { dev, click, ticks: tick_effect } = &self.motor else {
+            unreachable!("a motor that is not played from sysfs is played through events");
+        };
         let mut playing = self.playing.lock().expect("no thread panics while it holds the click playing");
         if let Some((slot, _)) = playing.take() {
-            erase(&self.dev, slot).context("take away the click still playing")?;
+            erase(dev, slot).context("take away the click still playing")?;
         }
-        let effect = if ticks { &self.ticks } else { &self.click };
-        let loaded = upload(&self.dev, effect, share).context("load the click")?;
-        play(&mut self.dev, loaded.slot).context("play the click")?;
+        let effect = if ticks { tick_effect } else { click };
+        let loaded = upload(dev, effect, share).context("load the click")?;
+        play(dev, loaded.slot).context("play the click")?;
         self.clicks += 1;
         let this = (loaded.slot, self.clicks);
         *playing = Some(this);
         drop(playing);
-        let dev = self.dev.try_clone().context("share the motor")?;
+        let dev = dev.try_clone().context("share the motor")?;
         let length = loaded.length + if ticks { TICKS_REST } else { Duration::ZERO };
         // Timed from now: a thread may wait a while before it first runs.
         let until = Instant::now() + length;
@@ -240,7 +280,7 @@ fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
 }
 
 /// Start the loaded effect in slot `id`.
-fn play(dev: &mut File, id: i16) -> io::Result<()> {
+fn play(mut dev: &File, id: i16) -> io::Result<()> {
     let event = libc::input_event { time: libc::timeval { tv_sec: 0, tv_usec: 0 }, type_: EV_FF, code: id as u16, value: 1 };
     let bytes = unsafe { std::slice::from_raw_parts((&event as *const libc::input_event).cast::<u8>(), std::mem::size_of::<libc::input_event>()) };
     dev.write_all(bytes)

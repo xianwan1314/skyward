@@ -63,7 +63,7 @@ pub const ENTRIES: &[Entry] = &[
         ["系统更新", "系統更新", "System update"],
         ADVANCED,
         Screen::Update,
-        &["xitonggengxin", "xtgx", "hebing", "hb", "xiazai", "xz", "wanzhenggengxinbao", "wzgxb", "update", "ota", "merge", "snapshot", "download"],
+        &["xitonggengxin", "xtgx", "gengxin", "xiazai", "update", "ota"],
     ),
     entry(SETTINGS, HOME, Screen::Settings, &["shezhi", "sz", "settings"]),
     entry(["深色模式", "深色模式", "Dark mode"], SETTINGS, Screen::Settings, &["shensemoshi", "ssms", "dark", "theme"]),
@@ -77,12 +77,6 @@ pub const ENTRIES: &[Entry] = &[
     entry(["重启", "重新啟動", "Reboot"], HOME, Screen::Reboot, &["chongqi", "cq", "reboot", "fastboot", "bootloader", "edl", "guanji"]),
     entry(["启动槽位", "啟動槽位", "Boot slot"], ["重启", "重新啟動", "Reboot"], Screen::Slot, &["qidongcaowei", "qdcw", "caowei", "cw", "slot"]),
     entry(["关于本机", "關於手機", "About phone"], SETTINGS, Screen::About, &["guanyubenji", "gybj", "about", "banben", "version"]),
-    entry(
-        ["Skyward 更新", "Skyward 更新", "Skyward update"],
-        SETTINGS,
-        Screen::SkywardUpdate,
-        &["skywardgengxin", "skywardgx", "shengji", "xiazai", "update", "upgrade", "release", "github"],
-    ),
     entry(
         ["全部参数与信息", "全部規格與資訊", "All specs"],
         ["设置 > 关于本机", "設定 > 關於手機", "Settings > About phone"],
@@ -187,7 +181,7 @@ mod tests {
         assert_eq!(titles("wifi"), ["WLAN"]);
         assert_eq!(find_on("wlan", Lang::Hans, |_| true).iter().map(|e| e.title[0]).collect::<Vec<_>>(), ["WLAN"]);
         assert!(find_on("wlan", Lang::Hans, |s| s != Screen::Wlan).is_empty());
-        assert_eq!(titles("xiazai"), ["系统更新", "Skyward 更新"]);
+        assert_eq!(titles("xiazai"), ["系统更新"]);
     }
 
     #[test]
@@ -199,10 +193,10 @@ mod tests {
     }
 
     #[test]
-    fn skyward_is_updated_from_its_own_page() {
-        assert_eq!(titles("skyward"), ["Skyward 更新"]);
-        assert_eq!(titles("gengxin"), ["系统更新", "Skyward 更新"]);
-        assert!(find_on("skyward", Lang::Hans, |s| s != Screen::SkywardUpdate).is_empty());
+    fn skyward_online_updates_are_gone() {
+        assert!(titles("skyward").is_empty());
+        assert_eq!(titles("gengxin"), ["系统更新"]);
+        assert!(find_on("skyward", Lang::Hans, |_| true).is_empty());
     }
 
     #[test]

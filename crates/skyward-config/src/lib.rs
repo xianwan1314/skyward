@@ -77,6 +77,11 @@ pub struct DeviceConfig {
     /// The phone's WLAN, on phones whose driver the recovery brings up.
     #[serde(default)]
     pub wlan: Option<Wlan>,
+    /// What the port is told at boot so that a drive plugged into an OTG
+    /// adapter shows, on phones whose driver keeps the port a device until
+    /// it is told it may be a host.
+    #[serde(default)]
+    pub usb: Option<Usb>,
     /// Where the phone maker answers which system is the newest, on phones
     /// whose server the recovery knows.
     #[serde(default)]
@@ -126,9 +131,27 @@ pub struct Wlan {
     /// which the directory takes only from a program the running system
     /// describes.
     pub service: String,
+    /// What else the supplicant registers beside `service`, such as the
+    /// vendor interface Qualcomm's supplicant offers on the phones whose
+    /// system leaves it out of what it describes: the directory turns away
+    /// what it is not told of, and a supplicant that has one turned away
+    /// ends as soon as it starts.
+    #[serde(default)]
+    pub services: Vec<String>,
     /// The page the stock system asks over plain HTTP to tell whether a
     /// network reaches the internet, which answers 204 with nothing.
     pub probe: String,
+}
+
+/// What the USB port is told at boot so that a drive plugged into an OTG
+/// adapter shows. A phone's own driver may keep the port a device until it
+/// is told it may be a host, whatever is plugged in.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Usb {
+    /// The switch telling the driver it may make the port a host, and what
+    /// it is written to allow it.
+    #[serde(default)]
+    pub host_mode: Option<Write>,
 }
 
 /// A value written to a file, such as a switch in sysfs.
@@ -212,9 +235,29 @@ pub struct Haptics {
     #[serde(default)]
     pub click: Option<i16>,
     /// The file the driver says the motor's resonant frequency in, in
-    /// tenths of a hertz whatever its label.
-    pub resonance: String,
+    /// tenths of a hertz whatever its label; given where the click is made.
+    #[serde(default)]
+    pub resonance: Option<String>,
     pub strength: Strength,
+    /// The files a driver is told how long to play and told to play, on
+    /// phones whose motor the kernel plays from sysfs rather than through
+    /// force-feedback events.
+    #[serde(default)]
+    pub timed: Option<Timed>,
+}
+
+/// A motor the kernel plays for a length written to one file and started
+/// by writing another, as some makers' haptics drivers do.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Timed {
+    /// The file the length in milliseconds is written to.
+    pub duration: String,
+    /// The file written to play it.
+    pub activate: String,
+    /// How long a click plays, and how long the ticks of the screen going
+    /// off play, in milliseconds.
+    pub click: u32,
+    pub ticks: u32,
 }
 
 /// How strongly the click plays, each as a share of the most its waveform
@@ -263,6 +306,10 @@ pub struct Device {
     pub brand: String,
     #[serde(default)]
     pub model: String,
+    /// The name the recovery shows for the phone, where it is not the
+    /// installed system's own market name.
+    #[serde(default)]
+    pub shown_model: Option<String>,
     #[serde(default = "default_true")]
     pub ab: bool,
     /// SoC marketing name shown on the About page.
@@ -271,6 +318,10 @@ pub struct Device {
     /// System property that carries the vendor OS version.
     #[serde(default = "default_os_version_prop")]
     pub os_version_prop: String,
+    /// Who made the recovery and who made it run on this phone, shown
+    /// under its version on the specs page.
+    #[serde(default)]
+    pub authors: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -539,8 +590,19 @@ impl DeviceConfig {
             ensure!(plain && !folder.is_empty(), "[backup] data_skipped: {folder} is not a path from the top of {DATA}");
         }
         if let Some(haptics) = &cfg.haptics {
-            let file = &haptics.resonance;
-            ensure!(Path::new(file).is_absolute(), "[haptics] resonance: {file} is not an absolute path");
+            if let Some(file) = &haptics.resonance {
+                ensure!(Path::new(file).is_absolute(), "[haptics] resonance: {file} is not an absolute path");
+            }
+            ensure!(
+                haptics.timed.is_some() || haptics.resonance.is_some(),
+                "[haptics] names neither a file the motor's resonant frequency is in nor a driver to play it through sysfs"
+            );
+            if let Some(timed) = &haptics.timed {
+                for file in [&timed.duration, &timed.activate] {
+                    ensure!(Path::new(file).is_absolute(), "[haptics] timed: {file} is not an absolute path");
+                }
+                ensure!(timed.click > 0 && timed.ticks > 0, "[haptics] timed: a click or the ticks play for no time at all");
+            }
             let Strength { lightest, strongest } = haptics.strength;
             ensure!(
                 0.0 < lightest && lightest < strongest && strongest <= 1.0,
@@ -641,7 +703,7 @@ mod tests {
     fn ishtar_clicks_with_a_waveform_its_driver_keeps() {
         let cfg = DeviceConfig::parse(include_str!("../../../devices/ishtar.toml")).unwrap();
         let haptics = cfg.haptics.expect("the 13 Ultra has a motor");
-        assert_eq!((haptics.click, haptics.resonance.as_str()), (Some(0), "/sys/class/qcom-haptics/lra_frequency_hz"));
+        assert_eq!((haptics.click, haptics.resonance.as_deref()), (Some(0), Some("/sys/class/qcom-haptics/lra_frequency_hz")));
         assert_eq!(haptics.strength, Strength { lightest: 0.5, strongest: 1.0 });
     }
 
@@ -707,7 +769,7 @@ mod tests {
         assert_eq!(post_boot.args, ["/vendor/bin/init.kernel.post_boot.sh"]);
         assert_eq!(post_boot.libraries, ["/system/lib64", "/vendor/lib64"], "it loads the recovery's own libraries first");
         let haptics = cfg.haptics.expect("the 17 Ultra has a motor");
-        assert_eq!((haptics.click, haptics.resonance.as_str()), (None, "/sys/class/qcom-haptics/lra_frequency_hz"), "its click is made");
+        assert_eq!((haptics.click, haptics.resonance.as_deref()), (None, Some("/sys/class/qcom-haptics/lra_frequency_hz")), "its click is made");
         assert_eq!(haptics.strength, Strength { lightest: 0.25, strongest: 0.75 }, "past three quarters the motor rattles");
         assert_eq!(cfg.backup.efs, ["modemst1", "modemst2", "fsg", "fsc", "persist"]);
         assert!(cfg.backup.data_skipped.contains(&"vendor/goodix".to_string()));

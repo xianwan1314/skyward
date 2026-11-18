@@ -137,10 +137,13 @@ impl Backlight {
 /// their factory tests drive the panel to, on the backlight's own scale:
 /// the 13 Ultra's panels give that level as well, and it comes to the same
 /// half of their range as the normal maximum they give.
-const NORMAL_MAX: [(&str, &str); 3] = [
+const NORMAL_MAX: [(&str, &str); 4] = [
     ("mi,normal-max-brightness-clone", "mi,max-brightness-clone"),
     ("mi,max-brightness-normal", "qcom,mdss-dsi-bl-max-level"),
     ("mi,mdss-dsi-fac-bl-max-level", "qcom,mdss-dsi-bl-max-level"),
+    // vivo panels, such as the PD2254's, give only the standard Qualcomm
+    // maximum; it is the whole of the backlight's own range.
+    ("qcom,mdss-dsi-bl-max-level", "qcom,mdss-dsi-bl-max-level"),
 ];
 
 /// The raw backlight level, out of `max`, at the panel's normal maximum.
@@ -256,6 +259,99 @@ fn withhold(transfer: &mut Option<Transfer>, app: &mut App, now: u64) -> Result<
 fn fastboot_status() -> Result<(bool, UsbLink)> {
     let running = skyward_sys::prop("init.svc.fastbootd").as_deref() == Some("running");
     Ok((running, usb_link()?))
+}
+
+/// The function and its link that init's fastboot action would make: a
+/// fastbootd started without them stops as it opens the function.
+fn prepare_fastboot_function() -> Result<()> {
+    const GADGET: &str = "/config/usb_gadget/g1";
+    let function = format!("{GADGET}/functions/ffs.fastboot");
+    if !Path::new(&function).exists() {
+        std::fs::create_dir(&function).with_context(|| format!("make {function}"))?;
+    }
+    let link = format!("{GADGET}/configs/b.1/f1");
+    if !matches!(std::fs::read_link(&link), Ok(target) if target == Path::new(&function)) {
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&function, &link).with_context(|| format!("link {link}"))?;
+    }
+    let _ = std::fs::write(format!("{GADGET}/idProduct"), "0x4EE0");
+    Ok(())
+}
+
+/// What the fastboot page's port looks like, kept on /metadata for a boot
+/// that cannot reach it over the cable: the page's own link reading, and
+/// what init and the gadget say.
+fn record_fastboot(line: &str) {
+    let _ = skyward_vab::metadata_writable(true);
+    let _ = std::fs::create_dir_all("/metadata/skyward");
+    let _ = std::fs::write("/metadata/skyward/fastboot.log", line);
+    let _ = skyward_vab::metadata_writable(false);
+}
+
+/// Have fastbootd take the port where init's own action did not: start it
+/// where the property left it stopped, wait for its function to be ready,
+/// and bind the controller.
+fn ensure_fastboot_port() -> Result<()> {
+    const GADGET: &str = "/config/usb_gadget/g1";
+    prepare_fastboot_function()?;
+    let function = format!("{GADGET}/functions/ffs.fastboot");
+    let link = format!("{GADGET}/configs/b.1/f1");
+    if skyward_sys::prop("init.svc.fastbootd").as_deref() != Some("running") {
+        skyward_sys::set_prop("ctl.start", "fastbootd").context("have init start fastbootd")?;
+    }
+    let mut until = Instant::now() + std::time::Duration::from_secs(5);
+    while skyward_sys::prop("sys.usb.ffs.ready").as_deref() != Some("1") {
+        if Instant::now() >= until {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if skyward_sys::prop("sys.usb.ffs.ready").as_deref() != Some("1") {
+        // A fastbootd that opened before its function was there stopped;
+        // ask init for it once more now that the function is.
+        let _ = skyward_sys::set_prop("ctl.restart", "fastbootd");
+        until = Instant::now() + std::time::Duration::from_secs(3);
+        while skyward_sys::prop("sys.usb.ffs.ready").as_deref() != Some("1") {
+            if Instant::now() >= until {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    let ready = skyward_sys::prop("sys.usb.ffs.ready").as_deref() == Some("1");
+    skyward_sys::kmsg(&format!(
+        "fastbootd is {}, its function is there {}, its link {}, ffs.ready {}",
+        skyward_sys::prop("init.svc.fastbootd").unwrap_or_else(|| "?".into()),
+        Path::new(&function).exists(),
+        Path::new(&link).exists(),
+        skyward_sys::prop("sys.usb.ffs.ready").unwrap_or_else(|| "?".into()),
+    ))?;
+    let outcome = if ready
+        && let Some(controller) = skyward_sys::prop("sys.usb.controller")
+    {
+        match std::fs::write(format!("{GADGET}/UDC"), &controller) {
+            Ok(()) => {
+                let _ = skyward_sys::set_prop("sys.usb.state", "fastboot");
+                "bound".to_string()
+            }
+            Err(e) => format!("not bound: {e}"),
+        }
+    } else {
+        "not ready".to_string()
+    };
+    let udc = std::fs::read_to_string(format!("{GADGET}/UDC")).unwrap_or_default();
+    record_fastboot(&format!(
+        "fastbootd={} function={} link={} ffs.ready={} state={:?} config={:?} usbffs={} udc={:?} {outcome}\n",
+        skyward_sys::prop("init.svc.fastbootd").unwrap_or_else(|| "?".into()),
+        Path::new(&function).exists(),
+        Path::new(&link).exists(),
+        skyward_sys::prop("sys.usb.ffs.ready").unwrap_or_else(|| "?".into()),
+        skyward_sys::prop("sys.usb.state"),
+        skyward_sys::prop("sys.usb.config"),
+        Path::new("/dev/usb-ffs/fastboot").exists(),
+        udc.trim(),
+    ));
+    Ok(())
 }
 
 /// Light the panel, as on a cable going in or out, when the battery as it
@@ -1238,7 +1334,7 @@ impl<'a> Pages<'a> {
         untaken(&mut unread.battery, "the battery", battery.as_ref().err())?;
         let info = skyward_info::collect_with(cfg, battery.unwrap_or_default())?;
         let fonts = Fonts::load(font, 0, mono)?;
-        let mut surface = KmsSurface::open("/dev/dri/card0")?;
+        let mut surface = KmsSurface::open("/dev/dri/card0", Some((cfg.display.width, cfg.display.height)))?;
         let (w, h) = surface.size();
         // A touch controller that follows the panel wakes as the panel goes
         // from rest to running, and at no other time. The recovery service
@@ -1316,9 +1412,23 @@ impl<'a> Pages<'a> {
             }
         }
         if fastboot {
+            // The stock recovery starts the boot, health and fastboot HALs on
+            // these; fastbootd looks for the fastboot HAL before it opens
+            // the port, and waits where none answers.
+            let _ = skyward_sys::set_prop("recovery.fastboot_mode", "1");
+            let _ = skyward_sys::set_prop("recovery.service", "1");
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // The function and its link come before fastbootd starts, as a
+            // fastbootd that opens a function that is not there stops.
+            if let Err(e) = prepare_fastboot_function() {
+                skyward_sys::kmsg(&format!("fastbootd's function not made: {e:#}"))?;
+            }
             if let Err(e) = skyward_sys::usb::switch("fastboot", USB_TIMEOUT) {
                 skyward_sys::kmsg(&format!("fastbootd has not taken the port: {e:#}"))?;
                 app.report(&format!("{e:#}"), monotonic_ms());
+            }
+            if let Err(e) = ensure_fastboot_port() {
+                skyward_sys::kmsg(&format!("fastbootd's port not bound: {e:#}"))?;
             }
             let (running, link) = fastboot_status()?;
             app.set_fastboot(running, link);
@@ -2744,7 +2854,8 @@ impl Pages<'_> {
     fn start_shell(&mut self, folder: &str, now: u64) -> Result<()> {
         ensure!(self.shell.is_none(), "a shell runs already");
         let (rows, cols) = self.app.term_size(&self.fonts);
-        match pty::Shell::start(rows, cols, &self.cfg.device.codename, Path::new(folder)) {
+        let shown = self.cfg.device.shown_model.as_deref().unwrap_or(&self.cfg.device.codename);
+        match pty::Shell::start(rows, cols, shown, Path::new(folder)) {
             Ok(sh) => {
                 self.shell = Some(sh);
                 self.app.term_started(rows, cols);

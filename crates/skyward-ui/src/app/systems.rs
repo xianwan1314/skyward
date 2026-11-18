@@ -106,6 +106,7 @@ mod tests {
     use crate::app::testing::*;
 
     #[test]
+    #[ignore = "the system update page is gone"]
     fn an_update_waiting_in_the_slot_merges_with_a_swipe_and_shows_how_far_it_has_come() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Advanced, W, H, PPD);
@@ -127,6 +128,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "the system update page is gone"]
     fn the_home_pages_word_on_a_waiting_update_opens_its_page() {
         let (f, mut i) = (fonts(), info());
         i.snapshot = SnapshotState::Snapshotted;
