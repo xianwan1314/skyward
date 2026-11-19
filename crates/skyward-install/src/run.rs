@@ -556,55 +556,13 @@ fn describe(package: &Package) -> String {
 }
 
 fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Result<Done> {
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
-    if let Err(refusal) = package::check(update, &phone(slot)?) {
-        return Ok(Done::Decided(Outcome::Refused(refusal)));
-    }
-    if let Some(refusal) = short_of_charge(ctx.origin)? {
-        return Ok(Done::Decided(Outcome::Refused(refusal)));
-    }
-    let state = skyward_vab::snapshot_state()?;
-    if state != SnapshotState::None {
-        return Ok(Done::Decided(Outcome::Refused(Refusal::Pending(state))));
-    }
-    // The screen may have left the page before it heard the package came.
-    if ctx.shared.cancelled() {
-        return Ok(Done::Decided(Outcome::Cancelled));
-    }
-    let version = update.version().map(str::to_string);
-    let wipe = update.wipes();
-    if waits(ctx.origin, wipe) {
-        ctx.send(Event::Ready { version: version.clone(), wipe });
-        match ctx.commands.recv() {
-            Ok(Command::Install) => {}
-            Ok(Command::Cancel) | Err(_) => return Ok(Done::Decided(Outcome::Cancelled)),
-            Ok(other) => bail!("an update waiting to be agreed to was told {other:?}"),
-        }
-    }
-    ctx.send(Event::Installing { version });
-    let kept = hold(ctx, slot)?;
-    installed_boot_set()?;
-    detach_once(ctx)?;
-    // update_engine mounts /metadata itself, as in the stock recovery, keeps
-    // the update's state there, and unmounts it when done. The recovery
-    // reads the state from it read-only again afterwards.
-    let metadata = Path::new(METADATA);
-    if skyward_block::mount::is_mount_point(metadata)? {
-        skyward_block::mount::umount(metadata)?;
-    }
-    let code = apply(ctx, mount, update);
-    if let Err(e) = remount_metadata() {
-        let _ = kmsg(&format!("install: /metadata not mounted again: {e:#}"));
-    }
-    Ok(match code? {
-        0 => {
-            if let Some(kept) = &kept {
-                reflash(ctx, kept, Ok(slot.other()));
-            }
-            Done::Decided(Outcome::Installed { slot: slot.other(), wipe })
-        }
-        code => Done::Engine(code),
-    })
+    // A system update writes the other slot's own partitions, and this
+    // phone's super holds one slot's system, not two: writing them over the
+    // running slot's takes the system on it down, with this recovery, before
+    // the update is written. This recovery installs no system update; it is
+    // flashed with fastboot.
+    let _ = (ctx, mount, update);
+    Ok(Done::Decided(Outcome::Refused(Refusal::SystemUpdate)))
 }
 
 /// This recovery, held before an install writes, when the screen asked to
@@ -696,7 +654,9 @@ enum Line {
 }
 
 /// Run update_engine on the package, telling the screen how far it is,
-/// and give its exit code.
+/// and give its exit code. Kept as it is for a phone whose super holds two
+/// slots' systems, which this recovery does not install one on.
+#[allow(dead_code)]
 fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
     let (status_read, status_write) = pipe()?;
     let status_fd = status_write.as_raw_fd();

@@ -25,6 +25,13 @@ pub struct State {
     pub vibration: f32,
     /// A computer connected over USB is offered internal storage.
     pub file_transfer: bool,
+    /// The port may be a host, so a drive plugged into an OTG adapter shows;
+    /// off at each start, and taken back before a computer is offered the
+    /// storage.
+    pub otg: bool,
+    /// The phone's own driver has a switch letting the port be a host, which
+    /// the settings page then offers.
+    pub otg_offered: bool,
     pub reboot: usize,
     /// What the wipe page has chosen, by place in [`WIPES`].
     pub wipe: [bool; WIPES.len()],
@@ -199,6 +206,9 @@ impl Default for State {
             // for, so a phone connected to a computer is not offered its
             // storage without a hand at the switch.
             file_transfer: false,
+            // The port is a device unless the settings page says otherwise.
+            otg: false,
+            otg_offered: false,
             reboot: 0,
             wipe: [false; WIPES.len()],
             cache_partition: false,

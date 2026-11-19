@@ -647,6 +647,23 @@ impl App {
         self.say(why, now);
     }
 
+    /// OTG host mode could not be turned on or off as the switch says: it
+    /// shows how it stands, and why.
+    pub fn otg_failed(&mut self, on: bool, why: &str, now: u64) {
+        self.state.otg = on;
+        self.refresh();
+        self.say(why, now);
+    }
+
+    /// OTG host mode stands as the phone's driver says, which may take it
+    /// back by itself: the switch follows it without a word.
+    pub fn otg_shown(&mut self, on: bool) {
+        if self.state.otg != on {
+            self.state.otg = on;
+            self.refresh();
+        }
+    }
+
     pub(super) fn say(&mut self, text: &str, now: u64) {
         self.toast = Some((text.to_string(), now + TOAST_MS));
         self.dirty = true;

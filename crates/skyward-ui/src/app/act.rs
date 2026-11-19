@@ -52,6 +52,7 @@ impl App {
                 let on = match switch {
                     Switch::Vibrate => &mut self.state.vibrate,
                     Switch::FileTransfer => &mut self.state.file_transfer,
+                    Switch::Otg => &mut self.state.otg,
                     Switch::Compress => &mut self.state.compress,
                     Switch::Verify => &mut self.state.verify,
                     Switch::Signature => &mut self.state.check_signature,
@@ -64,6 +65,9 @@ impl App {
                 self.refresh();
                 if switch == Switch::FileTransfer {
                     return vec![Effect::FileTransfer(now_on)];
+                }
+                if switch == Switch::Otg {
+                    return vec![Effect::Otg(now_on)];
                 }
             }
             Action::MountToggle(i) => {

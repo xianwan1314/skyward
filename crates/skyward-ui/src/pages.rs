@@ -359,14 +359,28 @@ pub fn settings(cx: &Ctx) -> Frame {
     ]);
     out.extend(hits(&general.rows, &[Action::Open(Screen::Language), Action::Open(Screen::TimeZone)]));
     y = widgets::section(&mut c, t, f, general.bottom, "USB");
-    let usb = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(["文件传输", "檔案傳輸", "File transfer"])).icon(BLUE, Icon::Usb).trail(Trail::Switch(s.file_transfer))]);
-    out.extend(hits(&usb.rows, &[Action::Toggle(Switch::FileTransfer)]));
+    let mut rows = vec![Row::new(l.pick(["文件传输", "檔案傳輸", "File transfer"])).icon(BLUE, Icon::Usb).trail(Trail::Switch(s.file_transfer))];
+    let mut switches = vec![Action::Toggle(Switch::FileTransfer)];
+    if s.otg_offered {
+        rows.push(Row::new(l.pick(["OTG 主机模式", "OTG 主機模式", "OTG host mode"])).icon(ORANGE, Icon::UsbDrive).trail(Trail::Switch(s.otg)));
+        switches.push(Action::Toggle(Switch::Otg));
+    }
+    let usb = widgets::list(&mut c, t, f, y, &rows);
+    out.extend(hits(&usb.rows, &switches));
     let note = l.pick([
         "开启后，可在电脑上管理内部存储中的文件，需先完成「解密」。",
         "開啟後，可在電腦上管理內部儲存空間中的檔案，需先完成「解密」。",
         "When on, a computer can manage the files in internal storage, once it is decrypted.",
     ]);
     y = widgets::footnote(&mut c, t, f, usb.bottom, note);
+    if s.otg_offered {
+        let note = l.pick([
+            "OTG 主机模式让插上 OTG 转接头的 U 盘出现在「U 盘」页面；手机会在开启约 5 分钟后自己关掉它，开启文件传输时也会先关掉。",
+            "OTG 主機模式讓插上 OTG 轉接頭的 U 盤出現在「U 盤」頁面；手機會在開啟約 5 分鐘後自己關掉它，開啟檔案傳輸時也會先關掉。",
+            "OTG host mode brings a drive plugged into an OTG adapter to the USB drive page. The phone turns it off by itself after about five minutes, and it is taken back before file transfer starts.",
+        ]);
+        y = widgets::footnote(&mut c, t, f, y, note);
+    }
     y = widgets::section(&mut c, t, f, y, l.pick(["调试", "偵錯", "Debugging"]));
     let debug = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(TERMINAL)).icon(SLATE, Icon::Terminal)]);
     out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal)]));
@@ -473,7 +487,7 @@ pub fn mount(cx: &Ctx) -> Frame {
 }
 
 /// Who made the recovery, as the About page names them under its version.
-const AUTHOR: &str = "© 2026 kirklin & xiaowan2026";
+const AUTHOR: &str = "© 2026 Kirk Lin & xiaowan2026";
 
 /// About this device, modelled on the stock「我的设备」: the wordmark, the
 /// version and its author over a moving colour field, and the summary,
@@ -1078,7 +1092,16 @@ pub fn installing(cx: &Ctx) -> Frame {
             widgets::list(&mut c, t, f, top, &[row]).bottom
         }
         Install::Idle | Install::Starting | Install::Ending => {
-            widgets::list(&mut c, t, f, top, &[Row::new(l.pick(READING_FILE)).icon(GREEN, Icon::Install).trail(Trail::None)]).bottom
+            let y = widgets::list(&mut c, t, f, top, &[Row::new(l.pick(READING_FILE)).icon(GREEN, Icon::Install).trail(Trail::None)]).bottom;
+            // A system update needs room for the other slot's system, which
+            // this phone's super does not have: it is said here, and such a
+            // package is refused after.
+            let note = l.pick([
+                "本机 super 装不下两个槽的系统，不支持在这里安装系统更新包，请用 fastboot 刷入。",
+                "本機 super 裝不下兩個槽的系統，不支援在這裡安裝系統更新檔，請用 fastboot 刷入。",
+                "This phone's super holds one slot's system, not two, so a system update isn't installed here: flash it with fastboot.",
+            ]);
+            widgets::footnote(&mut c, t, f, y, note)
         }
         Install::Opening => {
             let opening = Row::new(l.pick(["正在打开 data 分区", "正在開啟 data 分割區", "Opening the data partition"])).icon(GREEN, Icon::Lock).trail(Trail::None);

@@ -545,12 +545,11 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     for path in load_modules(cfg, &cfg.modules.load)? {
         skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
     }
-    // A phone's own driver may keep the port a device until told it may be
-    // a host, and a drive plugged into an OTG adapter then shows at once.
-    if let Some(host) = cfg.usb.as_ref().and_then(|u| u.host_mode.as_ref()) {
-        std::fs::write(&host.path, &host.value).with_context(|| format!("write {} to {}", host.value, host.path))?;
-        skyward_sys::kmsg(&format!("{} is {}", host.path, host.value))?;
-    }
+    // A phone's own driver may keep the port a device until it is told it may
+    // be a host, which the settings page's OTG switch does; it is never
+    // allowed here at boot, since the driver of some phones takes the
+    // permission back by itself after a while, dropping the port for a moment
+    // under whatever is on it.
     if !cfg.owners.is_empty() {
         let handed = hand_over(&cfg.owners)?;
         skyward_sys::kmsg(&format!("{handed} of the phone's own files handed to the accounts its init gives them"))?;

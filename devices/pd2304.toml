@@ -40,9 +40,12 @@ load = ["vivo_ts"]
 partition = "modem"
 
 [usb]
-# vivo 的 vusb 驱动默认只做设备端；写成 enabled 后插 OTG 转接头才会切到主机模式，
-# 否则 U 盘永远枚举不出来（接电脑时仍是设备端，adb 正常）。
-host_mode = { path = "/sys/devices/virtual/vusb/usb0/host_mode", value = "enabled" }
+# vivo 的 vusb 驱动默认只做设备端。这个节点就是设置页里的「OTG 主机模式」开关：
+# 写 on 允许主机模式（插 OTG 转接头才切过去），写 off 收回。
+# 坑：驱动在 on 之后会挂一个 300 秒的看门狗 host_disabled_alarm，到点自己收回
+# 主机模式并重设 CC，整条 USB 断约 1.5 秒。所以开启文件传输前会先写一次 off
+# 取消它，否则正在跑的 MTP 传输会被打断。详见 docs/pd2304.md「踩坑 7」。
+otg = { path = "/sys/devices/virtual/vusb/usb0/host_mode", on = "enabled", off = "disabled" }
 
 [haptics]
 # 马达由 vivo 私有驱动 qcom-haptics 播放，写时长再触发（真机已验证两个节点可写）。

@@ -1126,6 +1126,12 @@ pub fn refusal(l: Lang, r: &Refusal, codename: &str, source: Source, zone: usize
                 "This system needs at least {least}, and the data partition has {room} to spare."
             )
         }
+        Refusal::SystemUpdate => tr!(
+            l,
+            "这个恢复环境不支持安装系统更新包：本机 super 装不下两个槽的系统，请用 fastboot 刷入。",
+            "這個復原環境不支援安裝系統更新檔：本機 super 裝不下兩個槽的系統，請用 fastboot 刷入。",
+            "This recovery doesn't install system updates: this phone's super holds one slot's system, not two. Flash it with fastboot instead."
+        ),
         Refusal::NotBrick(_) | Refusal::NoSerial => unreachable!("only a request to erase partitions is refused as {r:?}"),
     }
 }

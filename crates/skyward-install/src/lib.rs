@@ -242,6 +242,11 @@ pub enum Refusal {
     /// A system whose root takes `least` bytes, where the data partition
     /// has room for `room`.
     NoRoom { least: u64, room: u64 },
+    /// An A/B system update, which this recovery does not install: an
+    /// update is written into the other slot's own partitions, and this
+    /// phone's super holds one slot's system, not two. It is flashed with
+    /// fastboot instead.
+    SystemUpdate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

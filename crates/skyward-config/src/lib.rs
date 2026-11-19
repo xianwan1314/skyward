@@ -143,15 +143,31 @@ pub struct Wlan {
     pub probe: String,
 }
 
-/// What the USB port is told at boot so that a drive plugged into an OTG
+/// The switch the settings page offers so that a drive plugged into an OTG
 /// adapter shows. A phone's own driver may keep the port a device until it
 /// is told it may be a host, whatever is plugged in.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Usb {
-    /// The switch telling the driver it may make the port a host, and what
-    /// it is written to allow it.
+    /// The switch allowing the port to be a host; a phone whose driver keeps
+    /// it a device has none, and the page offers no switch.
     #[serde(default)]
-    pub host_mode: Option<Write>,
+    pub otg: Option<Otg>,
+}
+
+/// The switch letting the port be a host, and what it is written to allow
+/// it and to take the permission back.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Otg {
+    /// The node in sysfs, which reads out what was last written to it.
+    pub path: String,
+    /// What it is written to allow the port to be a host.
+    pub on: String,
+    /// What it is written to take the permission back. Some drivers start a
+    /// timer when they are allowed, and take the permission back by
+    /// themselves when it runs out, the port dropping for a moment with
+    /// whatever is on it: Skyward takes it back before it offers a computer
+    /// the storage, so that the timer cannot run out under a transfer.
+    pub off: String,
 }
 
 /// A value written to a file, such as a switch in sysfs.

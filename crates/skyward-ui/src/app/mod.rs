@@ -429,6 +429,9 @@ pub enum Effect {
     Screenshot { storage: bool },
     /// Offer internal storage to a computer over USB, or stop.
     FileTransfer(bool),
+    /// Let the port be a host, so a drive plugged into an OTG adapter shows;
+    /// or take the permission back.
+    Otg(bool),
     /// Start receiving a package over USB.
     Sideload,
     /// Start installing the file at this path from the top of a place,

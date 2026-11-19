@@ -410,6 +410,37 @@ fn usb_link() -> Result<UsbLink> {
     })
 }
 
+/// The switch letting the port be a host, where the phone's driver has one.
+fn otg_switch(cfg: &DeviceConfig) -> Option<&skyward_config::Otg> {
+    cfg.usb.as_ref().and_then(|u| u.otg.as_ref())
+}
+
+/// Whether the port is allowed to be a host now, as the driver reads out
+/// what it was last written.
+fn otg_allowed(cfg: &DeviceConfig) -> bool {
+    let Some(otg) = otg_switch(cfg) else { return false };
+    fs::read_to_string(&otg.path).is_ok_and(|now| now.trim() == otg.on)
+}
+
+/// Allow the port to be a host, or take the permission back.
+fn set_otg(cfg: &DeviceConfig, on: bool) -> Result<()> {
+    let Some(otg) = otg_switch(cfg) else { return Err(anyhow!("this phone's port is never a host")) };
+    let value = if on { &otg.on } else { &otg.off };
+    fs::write(&otg.path, value).with_context(|| format!("write {value} to {}", otg.path))
+}
+
+/// Take the permission back before a computer is offered the storage, and
+/// say whether it had to be taken back: a driver that was allowed to make
+/// the port a host may take the permission back by itself when its timer
+/// runs out, the port dropping for a moment with the transfer on it.
+fn cancel_otg(cfg: &DeviceConfig) -> Result<bool> {
+    if !otg_allowed(cfg) {
+        return Ok(false);
+    }
+    set_otg(cfg, false)?;
+    Ok(true)
+}
+
 /// What a request from misc shows on the pages that answer it.
 fn asked(request: &bcb::Request) -> Asked {
     Asked {
@@ -1316,6 +1347,9 @@ struct Pages<'a> {
     plugged: Option<Plugged>,
     seen: Option<String>,
     drive_at: Instant,
+    /// When the port was last asked whether it may be a host, which the
+    /// phone's driver may take back by itself.
+    otg_at: Instant,
 }
 
 impl<'a> Pages<'a> {
@@ -1380,6 +1414,9 @@ impl<'a> Pages<'a> {
         let locale = request.locale.as_deref().or(info.locale.as_deref());
         let named = locale.map(Lang::for_locale).transpose()?;
         app.take_settings(kept.settings(), named);
+        // The settings page offers the OTG switch only where the phone's
+        // driver has one.
+        app.state.otg_offered = otg_switch(cfg).is_some();
         let keeper = Keeper::new(&kept);
         skyward_sys::kmsg(&format!(
             "the pages speak {:?}, {}, and the locale named is {}",
@@ -1403,6 +1440,16 @@ impl<'a> Pages<'a> {
         let port_at = Instant::now();
         let mut transfer: Option<Transfer> = None;
         if app.state.file_transfer {
+            // The port is a device while the storage is offered, so the
+            // permission to be a host goes before it is.
+            match cancel_otg(cfg) {
+                Ok(true) => {
+                    skyward_sys::kmsg("the port is a device again before file transfer")?;
+                    app.otg_shown(false);
+                }
+                Ok(false) => {}
+                Err(e) => skyward_sys::kmsg(&format!("the port kept its host mode: {e:#}"))?,
+            }
             match Transfer::start(cfg, &info, app.state.time_zone) {
                 Ok(t) => transfer = Some(t),
                 Err(e) => {
@@ -1412,6 +1459,17 @@ impl<'a> Pages<'a> {
             }
         }
         if fastboot {
+            // A computer has the port for the flash: the permission to be a
+            // host goes first, so that the driver's timer cannot run out
+            // under it.
+            match cancel_otg(cfg) {
+                Ok(true) => {
+                    skyward_sys::kmsg("the port is a device again before fastboot")?;
+                    app.otg_shown(false);
+                }
+                Ok(false) => {}
+                Err(e) => skyward_sys::kmsg(&format!("the port kept its host mode: {e:#}"))?,
+            }
             // The stock recovery starts the boot, health and fastboot HALs on
             // these; fastbootd looks for the fastboot HAL before it opens
             // the port, and waits where none answers.
@@ -1535,6 +1593,7 @@ impl<'a> Pages<'a> {
             plugged: None,
             seen: None,
             drive_at: Instant::now(),
+            otg_at: Instant::now(),
         })
     }
 
@@ -1702,6 +1761,10 @@ impl<'a> Pages<'a> {
         if self.drive_at.elapsed().as_secs() >= 1 {
             drive_told = look_for_drive(&mut self.plugged, &mut self.seen)?;
             self.drive_at = Instant::now();
+        }
+        if self.otg_at.elapsed().as_secs() >= 1 {
+            self.follow_otg()?;
+            self.otg_at = Instant::now();
         }
         self.installer_told(now)?;
         self.eraser_told(now)?;
@@ -2253,8 +2316,7 @@ impl Pages<'_> {
     }
 
     /// What the work on the two systems told.
-    fn systems_told(&mut self, now: u64) -> Result<()> {
-        let Some(worker) = &mut self.systems_worker else { return Ok(()) };
+    fn systems_told(&mut self, now: u64) -> Result<()> {        let Some(worker) = &mut self.systems_worker else { return Ok(()) };
         for ev in worker.events() {
             let lang = self.app.state.lang;
             match ev {
@@ -2618,6 +2680,17 @@ impl Pages<'_> {
             }
             Effect::Sideload => {
                 if self.may_install(now)? {
+                    // A computer has the port for the package: the permission
+                    // to be a host goes first, so that the driver's timer
+                    // cannot run out under the transfer.
+                    match cancel_otg(self.cfg) {
+                        Ok(true) => {
+                            skyward_sys::kmsg("the port is a device again before sideload")?;
+                            self.app.otg_shown(false);
+                        }
+                        Ok(false) => {}
+                        Err(e) => skyward_sys::kmsg(&format!("the port kept its host mode: {e:#}"))?,
+                    }
                     self.installer = Some(Installer::start(detach(self.programs.to_vec()), install_options(&self.app))?);
                     self.sideloading = true;
                 }
@@ -2796,6 +2869,7 @@ impl Pages<'_> {
             }
             Effect::EnterRecovery => self.enter_recovery()?,
             Effect::FileTransfer(on) => self.file_transfer(on, now)?,
+            Effect::Otg(on) => self.otg(on, now)?,
         }
         Ok(Vec::new())
     }
@@ -3102,21 +3176,44 @@ impl Pages<'_> {
     fn file_transfer(&mut self, on: bool, now: u64) -> Result<()> {
         let rests = !self.fastboot && !self.sideloading;
         match (on, self.transfer.take()) {
-            (true, None) => match Transfer::start(self.cfg, &self.info, self.app.state.time_zone) {
-                Ok(t) => {
-                    self.transfer = Some(t);
-                    if rests
-                        && let Err(e) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT)
-                    {
-                        skyward_sys::kmsg(&format!("the port did not take file transfer: {e:#}"))?;
-                        self.app.report(&format!("{e:#}"), now);
+            (true, None) => {
+                // The port is a device while a computer has the storage: the
+                // permission to be a host goes before the computer comes
+                // back to the port, so that the driver's timer cannot run
+                // out under the transfer.
+                let l = self.app.state.lang;
+                match cancel_otg(self.cfg) {
+                    Ok(true) => {
+                        skyward_sys::kmsg("the port is a device again before file transfer")?;
+                        self.app.otg_shown(false);
+                        self.app.report(
+                            l.pick([
+                                "文件传输需要 USB 设备模式，OTG 主机模式已关闭。",
+                                "檔案傳輸需要 USB 裝置模式，OTG 主機模式已關閉。",
+                                "File transfer needs the port as a device, so OTG host mode was turned off.",
+                            ]),
+                            now,
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(e) => skyward_sys::kmsg(&format!("the port kept its host mode: {e:#}"))?,
+                }
+                match Transfer::start(self.cfg, &self.info, self.app.state.time_zone) {
+                    Ok(t) => {
+                        self.transfer = Some(t);
+                        if rests
+                            && let Err(e) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT)
+                        {
+                            skyward_sys::kmsg(&format!("the port did not take file transfer: {e:#}"))?;
+                            self.app.report(&format!("{e:#}"), now);
+                        }
+                    }
+                    Err(e) => {
+                        skyward_sys::kmsg(&format!("file transfer did not start: {e:#}"))?;
+                        self.app.file_transfer_failed(false, &skyward_ui::fmt::transfer_failed(self.app.state.lang, &format!("{e:#}")), now);
                     }
                 }
-                Err(e) => {
-                    skyward_sys::kmsg(&format!("file transfer did not start: {e:#}"))?;
-                    self.app.file_transfer_failed(false, &skyward_ui::fmt::transfer_failed(self.app.state.lang, &format!("{e:#}")), now);
-                }
-            },
+            }
             (false, Some(t)) => {
                 if let Err(e) = t.stop(rests) {
                     skyward_sys::kmsg(&format!("file transfer did not stop cleanly: {e:#}"))?;
@@ -3125,6 +3222,55 @@ impl Pages<'_> {
             }
             (on, t) => unreachable!("the switch turned file transfer {on} while it was {}", t.is_some()),
         }
+        Ok(())
+    }
+
+    /// Allow the port to be a host, so a drive plugged into an OTG adapter
+    /// shows, or take the permission back. The port cannot be a host while a
+    /// computer is offered the storage, since the driver would take the
+    /// permission back by itself at the wrong moment, dropping the transfer.
+    fn otg(&mut self, on: bool, now: u64) -> Result<()> {
+        let l = self.app.state.lang;
+        if self.transfer.is_some() || self.sideloading || self.fastboot {
+            self.app.otg_failed(
+                false,
+                l.pick([
+                    "端口正被电脑用着，OTG 主机模式开不了：请先关掉文件传输，或结束正在进行的安装。",
+                    "連接埠正被電腦用著，OTG 主機模式開不了：請先關掉檔案傳輸，或結束正在進行的安裝。",
+                    "A computer has the port, so host mode cannot be on: turn file transfer off, or finish the install under way.",
+                ]),
+                now,
+            );
+            return Ok(());
+        }
+        if otg_switch(self.cfg).is_none() {
+            self.app.otg_failed(
+                false,
+                l.pick(["这台手机的端口没有主机模式开关。", "這台手機的連接埠沒有主機模式開關。", "This phone's port has no host mode switch."]),
+                now,
+            );
+            return Ok(());
+        }
+        match set_otg(self.cfg, on) {
+            Ok(()) => {
+                skyward_sys::kmsg(if on { "the port may be a host" } else { "the port is a device again" })?;
+                self.app.otg_shown(on);
+            }
+            Err(e) => {
+                skyward_sys::kmsg(&format!("the port did not take host mode {on}: {e:#}"))?;
+                self.app.otg_failed(!on, &format!("{e:#}"), now);
+            }
+        }
+        Ok(())
+    }
+
+    /// Follow the port's host mode: the phone's driver may take it back by
+    /// itself once its timer runs out, and the switch then shows so.
+    fn follow_otg(&mut self) -> Result<()> {
+        if otg_switch(self.cfg).is_none() {
+            return Ok(());
+        }
+        self.app.otg_shown(otg_allowed(self.cfg));
         Ok(())
     }
 }

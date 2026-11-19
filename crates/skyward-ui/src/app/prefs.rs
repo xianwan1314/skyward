@@ -16,6 +16,8 @@ pub enum Switch {
     Vibrate,
     /// Offer internal storage to a computer over USB.
     FileTransfer,
+    /// Let the port be a host, so a drive plugged into an OTG adapter shows.
+    Otg,
     /// Compress a backup.
     Compress,
     /// Read a backup back once it is written.
@@ -101,6 +103,26 @@ mod tests {
         assert!(!app.state.file_transfer);
         app.file_transfer_failed(false, "无法开启文件传输", 4000);
         assert!(!app.state.file_transfer, "the switch shows how it stands");
+    }
+
+    #[test]
+    fn the_otg_switch_has_the_runtime_follow_it() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Settings, W, H, PPD);
+        app.state.otg_offered = true;
+        assert!(!app.state.otg, "off until turned on");
+        let (_, y) = spot(&mut app, &f, &i, Action::Toggle(Switch::Otg));
+        if y > H as f32 * 0.9 {
+            scroll_to(&mut app, &f, y - H as f32 * 0.8, 0);
+        }
+        assert_eq!(tap_at(&mut app, &f, &i, Action::Toggle(Switch::Otg), 2000), [Effect::Otg(true)]);
+        assert!(app.state.otg);
+        assert_eq!(tap_at(&mut app, &f, &i, Action::Toggle(Switch::Otg), 3000), [Effect::Otg(false)]);
+        assert!(!app.state.otg);
+        app.otg_failed(false, "端口没有主机模式开关", 4000);
+        assert!(!app.state.otg, "the switch shows how it stands");
+        app.otg_shown(true);
+        assert!(app.state.otg, "and follows the driver, which may take host mode back by itself");
     }
 
     #[test]
